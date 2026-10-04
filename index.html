@@ -12,7 +12,19 @@ button{font:600 18px 'Public Sans',system-ui,sans-serif;background:var(--acc);co
 footer{margin-top:48px;border-top:1px solid var(--line);padding-top:16px;font-size:15px}
 </style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@700;800&family=Public+Sans:wght@400;600&family=IBM+Plex+Mono&display=swap"></head>
-<body><main><p class="logo">O Contrapeso<b>.</b></p><h1>Fatos com Lastro</h1>
+<body><main><p class="logo">O Contrapeso<b>.</b></p><section id="tt" hidden><h1>Autorização do TikTok</h1>
+<p id="msg" class="soft">Lendo a resposta do TikTok…</p>
+<div id="box" hidden><p>Copie o código abaixo e cole no GitHub, no workflow <b>“TikTok: autorizar”</b> (campo <code>codigo</code>). Ele vale por poucos minutos.</p>
+<div id="code" class="code"></div><button id="copy" type="button">Copiar código</button></div>
+<script>
+const q = new URLSearchParams(location.search), msg = document.getElementById('msg');
+if (q.get('code') || q.get('error')) document.getElementById('tt').hidden = false;
+if (q.get('code')) { document.getElementById('code').textContent = q.get('code'); document.getElementById('box').hidden = false; msg.textContent = 'Autorização recebida.'; }
+else if (q.get('error')) { msg.textContent = 'O TikTok retornou um erro: ' + q.get('error') + (q.get('error_description') ? ' (' + q.get('error_description') + ')' : ''); }
+else { msg.textContent = 'Nenhum código recebido. Abra o link de autorização de novo.'; }
+document.getElementById('copy').onclick = () => navigator.clipboard.writeText(q.get('code')).then(() => { document.getElementById('copy').textContent = 'Copiado'; });
+</script></section>
+<h1>Fatos com Lastro</h1>
 <p>O Contrapeso explica fatos com dados oficiais: o número, o período e a fonte. Estamos no Instagram, TikTok e YouTube como <b>@o_contrapeso</b>.</p>
 <p class="soft">Este endereço também hospeda as imagens dos posts e as páginas da ferramenta interna de publicação.</p>
 <footer class="soft">O Contrapeso · Fatos com Lastro · <a href="./">início</a> · <a href="termos.html">termos</a> · <a href="privacidade.html">privacidade</a> · contato: mensagem direta para @o_contrapeso no Instagram ou TikTok</footer>

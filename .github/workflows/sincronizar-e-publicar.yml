@@ -1,0 +1,192 @@
+name: Notion -> GitHub -> Instagram/TikTok
+
+on:
+  schedule:
+    # De hora em hora, das 7h às 23h de Brasília (UTC-3 = 10h às 02h UTC), no minuto 7.
+    # É só a rede de segurança: o horário exato dos posts "Agendado" vem de disparos externos
+    # (workflow_dispatch). Fora dessa janela (23h-7h) nada roda sozinho, para poupar a cota
+    # gratuita de minutos (ver docs/actions-cota.md).
+    - cron: "7 10-23,0-2 * * *"
+  workflow_dispatch:
+    inputs:
+      tudo:
+        description: "Reexportar tudo do Notion"
+        type: boolean
+        default: false
+      post:
+        description: "Publicar AGORA este post (URL ou ID do Notion), ignorando o horário"
+        type: string
+        default: ""
+      simular:
+        description: "Só simular a publicação (não posta nada)"
+        type: boolean
+        default: false
+      confirmar:
+        description: "CONFIRMO publicar de verdade o post indicado acima (só vale com o campo post preenchido)"
+        type: boolean
+        default: false
+
+# O GITHUB_TOKEN deste repositório (público) não faz nada aqui: o código fica no repositório PRIVADO
+# o-contrapeso-hub/o-contrapeso-hub, lido e gravado com o secret GH_PAT.
+permissions: {}
+
+concurrency:
+  group: contrapeso-sync
+  cancel-in-progress: false
+
+jobs:
+  rodar:
+    runs-on: ubuntu-24.04
+    # Vídeo (Reels e Stories) leva alguns minutos para processar no Instagram: os limites de espera do
+    # publicar.py somam até ~8 min (GitHub Pages) + ~10 min por contêiner de vídeo. Não baixar demais:
+    # matar o job no meio de uma publicação deixaria o post sem marca no Notion e ele sairia de novo.
+    timeout-minutes: 30
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      CONTRAPESO_REPO: o-contrapeso-hub/o-contrapeso-hub   # links do Notion apontam para o repositório privado
+    steps:
+      # ATENÇÃO: este repositório é público e os logs são públicos. Nada de set -x, env/printenv,
+      # upload-artifact nem gatilhos pull_request. Tokens derivados: scripts/logseguro.py (::add-mask::).
+      - name: Conferir secrets (falha cedo se faltar algum)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          MEDIA_TOKEN: ${{ secrets.MEDIA_TOKEN }}
+          IG_TOKEN: ${{ secrets.IG_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          TT_CLIENT_KEY: ${{ secrets.TT_CLIENT_KEY }}
+          TT_CLIENT_SECRET: ${{ secrets.TT_CLIENT_SECRET }}
+          TT_REFRESH_TOKEN: ${{ secrets.TT_REFRESH_TOKEN }}
+        run: |
+          faltam=""
+          for v in NOTION_TOKEN GH_PAT MEDIA_TOKEN IG_TOKEN IG_USER_ID; do
+            [ -n "${!v}" ] || faltam="$faltam $v"
+          done
+          if [ -n "$faltam" ]; then
+            echo "::error title=Faltam secrets::Cadastre em o-contrapeso-midia > Settings > Secrets and variables > Actions:$faltam"
+            exit 1
+          fi
+          for v in TT_CLIENT_KEY TT_CLIENT_SECRET TT_REFRESH_TOKEN; do
+            [ -n "${!v}" ] || echo "::warning title=TikTok sem secret::$v vazio: posts do TikTok ficam aguardando."
+          done
+
+      - name: Baixar o repositório privado (o conteúdo)
+        uses: actions/checkout@v4
+        with:
+          repository: o-contrapeso-hub/o-contrapeso-hub
+          ref: main
+          token: ${{ secrets.GH_PAT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip   # guarda os pacotes baixados entre as rodadas
+          cache-dependency-path: |
+            requirements-sync.txt
+            requirements-render.txt
+      # vídeo: ffmpeg estático (imageio-ffmpeg). Sem edge-tts: a dublagem foi abolida em 15/10/2026
+      # (DUBLAGEM só liga com a variável; só o dublar_video.py chama o edge_tts, por subprocesso, nunca importa)
+      - run: pip install --quiet -r requirements-sync.txt
+
+      # Antes era o workflow "Artefatos -> Notion" (push). Um push no repositório privado não dispara
+      # workflow aqui, então cada rodada confere o que é novo ou mudou (scripts/registrar_artefatos.py).
+      # Falha aqui não pode barrar a publicação: a pasta fica pendente para a próxima rodada.
+      - name: Registrar artefatos novos no Notion
+        continue-on-error: true
+        run: python scripts/registrar_artefatos.py
+
+      - name: Exportar Pautas e Posts do Notion
+        run: python scripts/notion_to_github.py ${{ inputs.tudo && '--tudo' || '' }}
+
+      - name: Verificar lâminas para renderizar
+        id: render
+        run: echo "precisa=$(python scripts/renderizar.py --checar | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar o Playwright (só quando há lâmina para renderizar)
+        id: playwright
+        if: steps.render.outputs.precisa == 'sim'
+        run: |
+          pip install --quiet -r requirements-render.txt
+          echo "versao=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache do Chromium do Playwright
+        if: steps.render.outputs.precisa == 'sim'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.versao }}
+
+      - name: Renderizar lâminas do canvas
+        if: steps.render.outputs.precisa == 'sim'
+        run: |
+          # --with-deps instala as bibliotecas do sistema (apt); o navegador só baixa se o cache estiver vazio
+          python -m playwright install --with-deps chromium
+          python scripts/renderizar.py
+
+      - name: Gerar mapa e ligações
+        run: python scripts/gerar_mapa.py
+
+      - name: Testes da legenda (barra publicação se falhar)
+        run: python tests/test_legenda.py
+
+      # Os testes dos Stories levam ~1 min (codificam vídeo). Só mudam de resultado se mudar o código,
+      # as trilhas/fontes ou os pacotes; então o "passou" fica guardado por código + semana (a semana
+      # força uma reconferência com as versões novas dos pacotes). Se o código mudar, roda de novo.
+      # hashFiles só com *.py: o __pycache__ criado pelos passos anteriores não entra na conta.
+      - name: Chave dos testes dos Stories
+        id: testes
+        run: echo "semana=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Testes dos Stories já passaram com este código?
+        id: testes-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/contrapeso-testes
+          key: testes-stories-${{ steps.testes.outputs.semana }}-${{ hashFiles('scripts/**/*.py', 'tests/**/*.py', 'marca/trilhas/**', 'marca/fontes/**', 'requirements-sync.txt') }}
+
+      - name: Testes dos Stories e do vídeo (barra publicação se falhar)
+        if: steps.testes-cache.outputs.cache-hit != 'true'
+        run: |
+          python tests/test_stories.py
+          mkdir -p ~/.cache/contrapeso-testes && date -u > ~/.cache/contrapeso-testes/ok
+
+      - name: Guardar que os testes dos Stories passaram
+        if: steps.testes-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/contrapeso-testes
+          key: ${{ steps.testes-cache.outputs.cache-primary-key }}
+
+      - name: Publicar posts (Publicar agora, Agendado no horário, botão manual confirmado ou Pronto para publicar com PUBLICACAO_ATIVA=sim)
+        env:
+          MEDIA_TOKEN: ${{ secrets.MEDIA_TOKEN }}
+          IG_TOKEN: ${{ secrets.IG_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          TT_CLIENT_KEY: ${{ secrets.TT_CLIENT_KEY }}
+          TT_CLIENT_SECRET: ${{ secrets.TT_CLIENT_SECRET }}
+          TT_REFRESH_TOKEN: ${{ secrets.TT_REFRESH_TOKEN }}
+          PUBLICACAO_ATIVA: ${{ vars.PUBLICACAO_ATIVA }}
+          MANUAL_OK: ${{ inputs.confirmar && 'sim' || 'nao' }}
+        run: |
+          ARGS=""
+          [ -n "${{ inputs.post }}" ] && ARGS="$ARGS --post ${{ inputs.post }}"
+          [ "${{ inputs.simular }}" = "true" ] && ARGS="$ARGS --simular"
+          python scripts/publicar.py $ARGS
+
+      - name: Guardar novo refresh token do TikTok (se mudou)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          F="$RUNNER_TEMP/novo_tt_refresh"
+          # o secret vive neste repositório (o-contrapeso-midia), não no privado que está em disco
+          if [ -f "$F" ] && [ -n "$GH_TOKEN" ]; then gh secret set TT_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" < "$F" && echo "Refresh token do TikTok atualizado."; fi
+
+      - name: Commit do que veio do Notion
+        run: |
+          git config user.name "contrapeso-bot"
+          git config user.email "contrapeso-bot@users.noreply.github.com"
+          git add notion publicacoes mapa artefatos config
+          if git diff --cached --quiet; then echo "Nada mudou."; else
+            git commit -m "Sync Notion -> GitHub ($(date -u +%Y-%m-%dT%H:%MZ))"
+            for i in 1 2 3; do git pull --rebase --autostash -X theirs && git push && break; sleep 5; done; fi

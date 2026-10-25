@@ -1,0 +1,43 @@
+name: Renovar token do Instagram
+
+# Roda neste repositório (público): logs públicos. O token renovado é mascarado antes de qualquer saída.
+on:
+  schedule:
+    - cron: "23 12 1,15 * *"   # dias 1 e 15 (o token longo vale ~60 dias)
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: renovar-tokens
+  cancel-in-progress: false
+
+jobs:
+  renovar:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Conferir secrets (falha cedo se faltar algum)
+        env:
+          IG_TOKEN: ${{ secrets.IG_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          faltam=""
+          for v in IG_TOKEN GH_PAT; do
+            [ -n "${!v}" ] || faltam="$faltam $v"
+          done
+          if [ -n "$faltam" ]; then
+            echo "::error title=Faltam secrets::Cadastre em o-contrapeso-midia > Settings > Secrets and variables > Actions:$faltam"
+            exit 1
+          fi
+
+      - name: Renovar e salvar IG_TOKEN
+        env:
+          IG_TOKEN: ${{ secrets.IG_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NOVO=$(curl -sf "https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=$IG_TOKEN" | jq -r .access_token)
+          if [ -z "$NOVO" ] || [ "$NOVO" = "null" ]; then echo "Falha ao renovar o token do Instagram"; exit 1; fi
+          echo "::add-mask::$NOVO"
+          # o secret vive neste repositório (o-contrapeso-midia, onde o workflow roda)
+          gh secret set IG_TOKEN --repo "$GITHUB_REPOSITORY" --body "$NOVO"
+          echo "IG_TOKEN renovado."

@@ -1,0 +1,62 @@
+name: Radar de divulgações
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"   # segundas, 06h17 em Brasília
+  workflow_dispatch:
+    inputs:
+      simular:
+        description: "Só listar, sem gravar no Notion"
+        type: boolean
+        default: false
+
+# O GITHUB_TOKEN deste repositório (público) não é usado: o conteúdo está no repositório privado (GH_PAT).
+permissions: {}
+
+concurrency:
+  group: radar
+  cancel-in-progress: false
+
+jobs:
+  radar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CONTRAPESO_REPO: o-contrapeso-hub/o-contrapeso-hub
+    steps:
+      # ATENÇÃO: repositório público = logs públicos (sem set -x, env/printenv, upload-artifact, pull_request).
+      - name: Conferir secrets (falha cedo se faltar algum)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          faltam=""
+          for v in NOTION_TOKEN GH_PAT; do
+            [ -n "${!v}" ] || faltam="$faltam $v"
+          done
+          if [ -n "$faltam" ]; then
+            echo "::error title=Faltam secrets::Cadastre em o-contrapeso-midia > Settings > Secrets and variables > Actions:$faltam"
+            exit 1
+          fi
+
+      - name: Baixar o repositório privado (o conteúdo)
+        uses: actions/checkout@v4
+        with:
+          repository: o-contrapeso-hub/o-contrapeso-hub
+          ref: main
+          token: ${{ secrets.GH_PAT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Atualizar o Radar no Notion
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: python scripts/radar.py ${{ inputs.simular && '--simular' || '' }}
+      - name: Guardar o resumo da execução
+        run: |
+          git config user.name "contrapeso-bot"
+          git config user.email "contrapeso-bot@users.noreply.github.com"
+          git add radar/ultima-execucao.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Radar: atualização de $(date -u +%F)"
+          for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done

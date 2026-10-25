@@ -1,0 +1,108 @@
+name: Vídeo colagem (cenas -> MP4)
+
+# Monta o vídeo em colagem de revista a partir de artefatos/<post>/cenas/cena-N.html
+# (scripts/video_colagem.py). Saída: artefatos/<post>/video/video-colagem.mp4 + prévias JPG. Não publica nada.
+#
+# Antes rodava por push no repositório privado. Um push lá não dispara workflow neste repositório, então:
+#   - de hora em hora (7h-23h de Brasília) confere se alguma pasta com cenas/ está sem vídeo ou com as cenas
+#     (ou o scripts/video_colagem.py) mudados desde a última montagem; se não há nada, termina logo;
+#   - "Run workflow" monta na hora (campo pasta vazio = todas as pendentes).
+# O que já foi montado fica registrado em artefatos/<post>/video/.cenas-hash (scripts/video_colagem_pendentes.py).
+
+on:
+  schedule:
+    - cron: "47 10-23,0-2 * * *"
+  workflow_dispatch:
+    inputs:
+      pasta:
+        description: "Pasta do artefato (ex.: artefatos/2026-10-18-contrapeso-dia-6-video-colagem). Vazio = todas com cenas mais novas que o vídeo"
+        type: string
+        default: ""
+
+# O GITHUB_TOKEN deste repositório (público) não é usado: o conteúdo está no repositório privado (GH_PAT).
+permissions: {}
+
+concurrency:
+  group: contrapeso-video-colagem
+  cancel-in-progress: false
+
+jobs:
+  montar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CONTRAPESO_REPO: o-contrapeso-hub/o-contrapeso-hub
+    steps:
+      # ATENÇÃO: repositório público = logs públicos (sem set -x, env/printenv, upload-artifact, pull_request).
+      - name: Conferir secrets (falha cedo se faltar algum)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_PAT" ]; then
+            echo "::error title=Faltam secrets::Cadastre GH_PAT em o-contrapeso-midia > Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+
+      - name: Baixar o repositório privado (o conteúdo)
+        uses: actions/checkout@v4
+        with:
+          repository: o-contrapeso-hub/o-contrapeso-hub
+          ref: main
+          token: ${{ secrets.GH_PAT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-sync.txt
+            requirements-render.txt
+
+      - name: Ver o que precisa de vídeo
+        id: pend
+        env:
+          PASTA: ${{ inputs.pasta }}
+        run: |
+          if [ -n "$PASTA" ]; then alvo="$PASTA"; else alvo=$(python scripts/video_colagem_pendentes.py | xargs); fi
+          echo "alvo=$alvo" >> "$GITHUB_OUTPUT"
+          echo "Pastas: ${alvo:-nenhuma (tudo em dia)}"
+
+      - name: Instalar dependências
+        id: deps
+        if: steps.pend.outputs.alvo != ''
+        run: |
+          pip install --quiet -r requirements-sync.txt -r requirements-render.txt
+          echo "versao=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache do Chromium do Playwright
+        if: steps.pend.outputs.alvo != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.deps.outputs.versao }}
+
+      - name: Instalar o Chromium
+        if: steps.pend.outputs.alvo != ''
+        run: python -m playwright install --with-deps chromium
+
+      - name: Montar vídeos
+        if: steps.pend.outputs.alvo != ''
+        env:
+          ALVO: ${{ steps.pend.outputs.alvo }}
+        run: |
+          set -e
+          for d in $ALVO; do
+            mkdir -p "$d/video"
+            rm -f "$d"/video/previa-*.jpg
+            python scripts/video_colagem.py "$d/cenas" "$d/video/video-colagem.mp4"
+            python scripts/video_colagem_pendentes.py --marcar "$d"
+          done
+
+      - name: Salvar no repositório
+        if: steps.pend.outputs.alvo != ''
+        run: |
+          git config user.name "contrapeso-bot"
+          git config user.email "contrapeso-bot@users.noreply.github.com"
+          git add artefatos/*/video || true
+          if git diff --cached --quiet; then echo "Nada novo"; exit 0; fi
+          git commit -m "Vídeo colagem: montagem automática"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done

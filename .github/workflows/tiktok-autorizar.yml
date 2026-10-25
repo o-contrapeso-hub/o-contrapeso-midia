@@ -1,0 +1,78 @@
+name: "TikTok: autorizar"
+
+# Troca o código da autorização (página tiktok-callback) pelo refresh token e o salva
+# no secret TT_REFRESH_TOKEN deste repositório. Nenhum token aparece no registro da execução
+# (os logs são públicos: o refresh token e o token de acesso são mascarados assim que a API responde).
+# Atenção: o código digitado em "codigo" aparece no log; ele vale uma vez só e é inútil sem o client secret.
+on:
+  workflow_dispatch:
+    inputs:
+      codigo:
+        description: "Código copiado da página de autorização do TikTok"
+        required: true
+        type: string
+      redirect:
+        description: "Redirect URI usado no link (igual ao cadastrado no TikTok)"
+        required: true
+        type: string
+        default: "https://o-contrapeso-hub.github.io/o-contrapeso-midia/"
+
+permissions: {}
+
+concurrency:
+  group: tiktok-autorizar
+  cancel-in-progress: false
+
+jobs:
+  autorizar:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Conferir secrets (falha cedo se faltar algum)
+        env:
+          TT_CLIENT_KEY: ${{ secrets.TT_CLIENT_KEY }}
+          TT_CLIENT_SECRET: ${{ secrets.TT_CLIENT_SECRET }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          faltam=""
+          for v in TT_CLIENT_KEY TT_CLIENT_SECRET GH_PAT; do
+            [ -n "${!v}" ] || faltam="$faltam $v"
+          done
+          if [ -n "$faltam" ]; then
+            echo "::error title=Faltam secrets::Cadastre em o-contrapeso-midia > Settings > Secrets and variables > Actions:$faltam"
+            exit 1
+          fi
+
+      - name: Trocar código pelo token e salvar
+        env:
+          CODE: ${{ inputs.codigo }}
+          TT_CLIENT_KEY: ${{ secrets.TT_CLIENT_KEY }}
+          TT_CLIENT_SECRET: ${{ secrets.TT_CLIENT_SECRET }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REDIRECT: ${{ inputs.redirect }}
+        run: |
+          # limpa espaços/quebras de linha e decodifica se veio com %xx
+          CODE=$(printf '%s' "$CODE" | tr -d '[:space:]')
+          case "$CODE" in *%*) CODE=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.unquote(sys.argv[1]))' "$CODE");; esac
+          REDIRECT=$(printf '%s' "$REDIRECT" | tr -d '[:space:]')
+          echo "::add-mask::$CODE"
+          echo "Código com ${#CODE} caracteres; redirect: $REDIRECT"
+          RESP=$(curl -s -X POST https://open.tiktokapis.com/v2/oauth/token/ \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "client_key=$TT_CLIENT_KEY" \
+            --data-urlencode "client_secret=$TT_CLIENT_SECRET" \
+            --data-urlencode "code=$CODE" \
+            --data-urlencode "grant_type=authorization_code" \
+            --data-urlencode "redirect_uri=$REDIRECT")
+          # derivados da resposta: mascara antes de qualquer saída (o GitHub não os mascara sozinho)
+          REFRESH=$(echo "$RESP" | jq -r '.refresh_token // empty')
+          ACESSO=$(echo "$RESP" | jq -r '.access_token // empty')
+          OPENID=$(echo "$RESP" | jq -r '.open_id // empty')
+          for v in "$REFRESH" "$ACESSO" "$OPENID"; do
+            if [ -n "$v" ]; then echo "::add-mask::$v"; fi
+          done
+          if [ -z "$REFRESH" ]; then
+            echo "Falhou: $(echo "$RESP" | jq -c '{error, error_description, log_id}')"; exit 1
+          fi
+          # o secret vive neste repositório (o-contrapeso-midia, onde o workflow roda)
+          gh secret set TT_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" --body "$REFRESH"
+          echo "Autorizado. Permissões: $(echo "$RESP" | jq -r '.scope') · refresh token válido por $(( $(echo "$RESP" | jq -r '.refresh_expires_in') / 86400 )) dias."

@@ -16,6 +16,7 @@ from publicador.core.redacao import SegredoStr, limpar_segredos_registrados
 from publicador.notion.cliente import (
     ClienteNotion,
     ErroNotion,
+    ErroNotionIncerto,
     ErroNotionPermanente,
     ErroNotionTransitorio,
     ErroTransporte,
@@ -393,3 +394,99 @@ def test_logs_de_repeticao_existem_e_sao_seguros(caplog: pytest.LogCaptureFixtur
         cliente.requisitar("GET", f"/pages/{ID_PAGINA}")
     assert any(r.name.startswith("publicador") for r in caplog.records)
     assert "rejeitado" not in caplog.text
+
+
+# --------------------------------------------------------------------------- nao idempotente
+
+
+def test_nao_idempotente_5xx_nao_repete_e_levanta_incerto() -> None:
+    cliente, transp, rel = montar([resp(503, {"code": "service_unavailable", "message": ECO})])
+    with pytest.raises(ErroNotionIncerto) as info:
+        cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False)
+    assert len(transp.chamadas) == 1
+    assert rel.sonos == []
+    assert isinstance(info.value, ErroNotionTransitorio)
+    assert info.value.status == 503
+    _sem_segredo(info.value)
+
+
+def test_nao_idempotente_erro_de_transporte_nao_repete() -> None:
+    cliente, transp, _ = montar([ErroTransporte(f"falha {ECO}"), resp(200, {"id": ID_PAGINA})])
+    with pytest.raises(ErroNotionIncerto) as info:
+        cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False)
+    assert len(transp.chamadas) == 1
+    assert info.value.status is None
+    _sem_segredo(info.value)
+
+
+def test_nao_idempotente_429_repete_respeitando_retry_after() -> None:
+    cliente, transp, rel = montar(
+        [resp(429, {"code": "rate_limited"}, **{"Retry-After": "2"}), resp(200, {"ok": True})]
+    )
+    assert cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False) == {"ok": True}
+    assert rel.sonos == [2.0]
+    assert len(transp.chamadas) == 2
+
+
+def test_nao_idempotente_429_depois_5xx_vira_incerto() -> None:
+    cliente, transp, _ = montar([resp(429, None, **{"Retry-After": "1"}), resp(500)])
+    with pytest.raises(ErroNotionIncerto):
+        cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False)
+    assert len(transp.chamadas) == 2
+
+
+def test_nao_idempotente_429_esgotado_e_transitorio_comum() -> None:
+    cliente, _, _ = montar([resp(429, None, **{"Retry-After": "1"})] * 5)
+    with pytest.raises(ErroNotionTransitorio) as info:
+        cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False)
+    assert not isinstance(info.value, ErroNotionIncerto)
+    assert info.value.status == 429
+
+
+def test_nao_idempotente_4xx_permanente_igual() -> None:
+    cliente, transp, _ = montar([resp(400, {"code": "validation_error", "message": ECO})])
+    with pytest.raises(ErroNotionPermanente) as info:
+        cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False)
+    assert len(transp.chamadas) == 1
+    assert info.value.codigo == "validation_error"
+
+
+def test_idempotente_por_padrao_continua_repetindo_5xx() -> None:
+    cliente, transp, _ = montar([resp(500), resp(200, {"ok": 1})])
+    assert cliente.requisitar("PATCH", f"/pages/{ID_PAGINA}", {"properties": {}}) == {"ok": 1}
+    assert len(transp.chamadas) == 2
+
+
+def test_criar_pagina_nao_repete_em_5xx() -> None:
+    cliente, transp, _ = montar([resp(500), resp(200, {"id": ID_PAGINA})])
+    with pytest.raises(ErroNotionIncerto):
+        cliente.criar_pagina({"database_id": ID_UUID}, {"Nome": {"title": []}})
+    assert len(transp.chamadas) == 1
+
+
+def test_consulta_de_banco_continua_repetindo_5xx() -> None:
+    cliente, transp, _ = montar([resp(500), resp(200, {"results": [], "has_more": False})])
+    assert cliente.consultar_banco(ID_PAGINA) == []
+    assert len(transp.chamadas) == 2
+
+
+def test_mensagem_do_erro_incerto_e_fixa_e_segura(caplog: pytest.LogCaptureFixture) -> None:
+    mensagens: list[str] = []
+    for item in (
+        RespostaHttp(502, {"x-eco": ECO}, ECO.encode()),
+        resp(500, {"code": "internal", "message": ECO}),
+        ErroTransporte(f"falha {ECO}"),
+    ):
+        cliente, _, _ = montar([item])
+        with caplog.at_level(logging.DEBUG, logger="publicador"):
+            with pytest.raises(ErroNotionIncerto) as info:
+                cliente.requisitar("POST", "/pages", {"a": 1}, idempotente=False)
+        _sem_segredo(info.value)
+        mensagens.append(str(info.value))
+    assert len(set(mensagens)) == 1
+    texto = mensagens[0].lower()
+    assert "incerto" in texto
+    assert "confira no notion" in texto
+    saida = caplog.text + "".join(r.getMessage() for r in caplog.records)
+    for proibido in (TOKEN, "TOKEN_FALSO", "rejeitado", "Bearer", "Authorization"):
+        assert proibido not in saida

@@ -192,7 +192,10 @@ def _blocos_de_texto(corpo: str) -> list[dict[str, Any]]:
 def _anexar_blocos(cliente: ClienteNotion, pagina_id: str, blocos: list[dict[str, Any]]) -> None:
     for i in range(0, len(blocos), LIMITE_BLOCOS_POR_REQUISICAO):
         lote = blocos[i : i + LIMITE_BLOCOS_POR_REQUISICAO]
-        cliente.requisitar("PATCH", f"/blocks/{pagina_id}/children", {"children": lote})
+        # Não idempotente: repetir após erro incerto duplicaria blocos.
+        cliente.requisitar(
+            "PATCH", f"/blocks/{pagina_id}/children", {"children": lote}, idempotente=False
+        )
 
 
 # --------------------------------------------------------------------------- operações
@@ -203,6 +206,9 @@ def criar_post(cliente: ClienteNotion, banco_posts_id: str, alteracoes: Alteraco
 
     Exige título. O corpo vira parágrafos (até 100 blocos na criação; o excedente é
     anexado em requisições seguintes). Grava só o que foi informado.
+
+    Se o POST (ou o anexo do excedente) falhar com ``ErroNotionIncerto``, nada é repetido
+    e o erro propaga: a página pode já existir; confira no Notion antes de tentar de novo.
     """
     if isinstance(alteracoes.titulo, NaoAlterar):
         raise ValueError("título é obrigatório para criar um post")
@@ -214,7 +220,9 @@ def criar_post(cliente: ClienteNotion, banco_posts_id: str, alteracoes: Alteraco
     }
     if blocos:
         requisicao["children"] = blocos[:LIMITE_BLOCOS_POR_REQUISICAO]
-    resposta = cliente.requisitar("POST", "/pages", requisicao)
+    # Não idempotente: em 5xx/transporte levanta ErroNotionIncerto (sem repetir) e o
+    # erro propaga; o chamador decide, depois de conferir no Notion.
+    resposta = cliente.requisitar("POST", "/pages", requisicao, idempotente=False)
     novo_id = resposta.get("id")
     if not isinstance(novo_id, str) or not novo_id:
         raise ValueError("resposta do Notion sem id da página criada")

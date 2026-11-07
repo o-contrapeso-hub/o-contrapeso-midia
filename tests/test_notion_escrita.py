@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from publicador.core.redacao import SegredoStr
-from publicador.notion.cliente import ClienteNotion, ErroNotion, RespostaHttp
+from publicador.notion.cliente import (
+    ClienteNotion,
+    ErroNotion,
+    ErroNotionIncerto,
+    ErroTransporte,
+    RespostaHttp,
+)
 from publicador.notion.escrita import (
     NAO_ALTERAR,
     AlteracoesPost,
@@ -269,6 +275,66 @@ def test_erro_do_notion_propaga_na_criacao() -> None:
     assert info.value.status == 400
 
 
+def test_criar_post_5xx_envia_uma_unica_requisicao_e_levanta_incerto() -> None:
+    cliente, transp = montar([resp(500, {"code": "internal"}), resp(200, {"id": PAGINA})])
+    with pytest.raises(ErroNotionIncerto) as info:
+        criar_post(cliente, BANCO, AlteracoesPost(titulo="X"))
+    assert len(transp.chamadas) == 1
+    assert "confira no notion" in str(info.value).lower()
+    assert TOKEN not in str(info.value)
+
+
+def test_criar_post_erro_de_transporte_nao_repete() -> None:
+    cliente, transp = montar([ErroTransporte("x"), resp(200, {"id": PAGINA})])
+    with pytest.raises(ErroNotionIncerto):
+        criar_post(cliente, BANCO, AlteracoesPost(titulo="X"))
+    assert len(transp.chamadas) == 1
+
+
+def test_criar_post_429_depois_sucesso_repete_sem_duplicar() -> None:
+    cliente, transp = montar(
+        [RespostaHttp(429, {"Retry-After": "1"}, b""), resp(200, {"id": PAGINA})]
+    )
+    assert criar_post(cliente, BANCO, AlteracoesPost(titulo="X")) == PAGINA
+    assert [c.metodo for c in transp.chamadas] == ["POST", "POST"]
+    # a 429 nao foi processada: o mesmo corpo e reenviado uma vez, resultando em uma pagina
+    assert transp.chamadas[0].corpo == transp.chamadas[1].corpo
+
+
+def test_anexo_de_blocos_erro_de_transporte_nao_repete() -> None:
+    cliente, transp = montar([resp(200, {"id": PAGINA}), ErroTransporte("x"), resp(200, vazio())])
+    corpo = "\n".join(f"l{i}" for i in range(130))
+    with pytest.raises(ErroNotionIncerto):
+        criar_post(cliente, BANCO, AlteracoesPost(titulo="Muitos", corpo=corpo))
+    assert [c.metodo for c in transp.chamadas] == ["POST", "PATCH"]
+
+
+def test_anexo_de_blocos_5xx_nao_repete_na_edicao_e_nao_apaga_antigos() -> None:
+    blocos = {
+        "results": [{"id": "11111111111111111111111111111111", "type": "paragraph"}],
+        "has_more": False,
+    }
+    cliente, transp = montar(
+        [resp(200, pagina()), resp(200, blocos), resp(502, {}), resp(200, vazio())]
+    )
+    with pytest.raises(ErroNotionIncerto):
+        editar_post(cliente, PAGINA, AlteracoesPost(corpo="Novo"), EDITADO_DT)
+    assert [c.metodo for c in transp.chamadas] == ["GET", "GET", "PATCH"]
+
+
+def test_anexo_de_blocos_429_repete() -> None:
+    cliente, transp = montar(
+        [
+            resp(200, {"id": PAGINA}),
+            RespostaHttp(429, {"Retry-After": "1"}, b""),
+            resp(200, vazio()),
+        ]
+    )
+    corpo = "\n".join(f"l{i}" for i in range(130))
+    criar_post(cliente, BANCO, AlteracoesPost(titulo="Muitos", corpo=corpo))
+    assert [c.metodo for c in transp.chamadas] == ["POST", "PATCH", "PATCH"]
+
+
 # ------------------------------------------------------------------ editar_post
 
 
@@ -358,6 +424,30 @@ def test_editar_corpo_apaga_blocos_de_texto_e_cria_novos() -> None:
     assert transp.chamadas[2].json["children"][0]["paragraph"]["rich_text"][0]["text"] == {
         "content": "Novo texto"
     }
+
+
+def test_patch_de_propriedades_com_5xx_continua_repetindo() -> None:
+    cliente, transp = montar([resp(200, pagina()), resp(500, {}), resp(200, pagina())])
+    editar_post(cliente, PAGINA, AlteracoesPost(titulo="N"), EDITADO_DT)
+    assert [c.metodo for c in transp.chamadas] == ["GET", "PATCH", "PATCH"]
+
+
+def test_apagar_bloco_com_5xx_continua_repetindo() -> None:
+    blocos = {
+        "results": [{"id": "11111111111111111111111111111111", "type": "paragraph"}],
+        "has_more": False,
+    }
+    cliente, transp = montar(
+        [
+            resp(200, pagina()),
+            resp(200, blocos),
+            resp(200, vazio()),
+            resp(500, {}),
+            resp(200, {}),
+        ]
+    )
+    editar_post(cliente, PAGINA, AlteracoesPost(corpo="Novo"), EDITADO_DT)
+    assert [c.metodo for c in transp.chamadas] == ["GET", "GET", "PATCH", "DELETE", "DELETE"]
 
 
 def test_erro_do_notion_propaga_na_edicao() -> None:

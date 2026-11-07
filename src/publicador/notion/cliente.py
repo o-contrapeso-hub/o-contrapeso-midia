@@ -29,6 +29,7 @@ from publicador.core.redacao import SegredoStr, obter_logger, redigir
 __all__ = [
     "ClienteNotion",
     "ErroNotion",
+    "ErroNotionIncerto",
     "ErroNotionPermanente",
     "ErroNotionTransitorio",
     "ErroTransporte",
@@ -148,6 +149,14 @@ class ErroNotionTransitorio(ErroNotion):
     """Esgotou as tentativas por 429, 5xx ou falha de transporte."""
 
 
+class ErroNotionIncerto(ErroNotionTransitorio):
+    """Operacao NAO idempotente falhou (5xx/transporte) e nao foi repetida.
+
+    O Notion pode ter processado a requisicao; repetir poderia duplicar paginas ou
+    blocos. A mensagem e fixa: sem corpo, cabecalhos nem token.
+    """
+
+
 class ErroNotionPermanente(ErroNotion):
     """Erro que repetir nao resolve (4xx, resposta inesperada)."""
 
@@ -156,6 +165,12 @@ def _mensagem(status: int | None) -> str:
     if status is None:
         return "Falha ao consultar o Notion (erro de transporte)"
     return f"Falha ao consultar o Notion (status {status})"
+
+
+MENSAGEM_INCERTO: Final = (
+    "Resultado incerto: a requisicao nao foi repetida porque o Notion pode ja ter "
+    "processado a operacao. Confira no Notion antes de tentar de novo."
+)
 
 
 def _extrair_codigo(corpo: bytes, token: str) -> str | None:
@@ -239,8 +254,15 @@ class ClienteNotion:
         caminho: str,
         corpo: dict[str, Any] | None = None,
         consulta: Mapping[str, str] | None = None,
+        idempotente: bool = True,
     ) -> dict[str, Any]:
-        """Executa uma requisicao e devolve o JSON (objeto) da resposta."""
+        """Executa uma requisicao e devolve o JSON (objeto) da resposta.
+
+        Com ``idempotente=False`` (criar pagina, anexar blocos), 5xx ou falha de
+        transporte NAO sao repetidos (o servidor pode ter processado a tentativa):
+        levanta ``ErroNotionIncerto``. Em 429 a requisicao nao foi processada, entao
+        a repeticao e segura para qualquer operacao.
+        """
         metodo = metodo.upper()
         if metodo not in _METODOS:
             raise ValueError("Metodo HTTP nao permitido")
@@ -256,6 +278,7 @@ class ClienteNotion:
         for tentativa in range(1, MAX_TENTATIVAS + 1):
             self._respeitar_taxa()
             espera = min(ESPERA_BASE * 2 ** (tentativa - 1), ESPERA_TETO)
+            falha_de_transporte = False
             try:
                 resposta = self._transporte.enviar(
                     metodo, url, self._cabecalhos(dados is not None), dados, TIMEOUT_PADRAO
@@ -263,7 +286,9 @@ class ClienteNotion:
             except ErroTransporte:
                 ultimo_status, ultimo_codigo = None, None
                 motivo = "transporte"
+                falha_de_transporte = True
             else:
+                falha_de_transporte = False
                 if 200 <= resposta.status < 300:
                     return self._decodificar(resposta)
                 ultimo_status = resposta.status
@@ -277,11 +302,22 @@ class ClienteNotion:
                     except ValueError:
                         pass
                 elif resposta.status >= 500:
+                    if not idempotente:
+                        _log.warning(
+                            "Notion: status %s em operacao nao idempotente", resposta.status
+                        )
+                        raise ErroNotionIncerto(
+                            MENSAGEM_INCERTO, status=resposta.status, codigo=ultimo_codigo
+                        )
                     motivo = "5xx"
                 else:
                     raise ErroNotionPermanente(
                         _mensagem(resposta.status), status=resposta.status, codigo=ultimo_codigo
                     )
+            if falha_de_transporte and not idempotente:
+                # Fora do except: o erro novo nao fica encadeado ao ErroTransporte.
+                _log.warning("Notion: falha de transporte em operacao nao idempotente")
+                raise ErroNotionIncerto(MENSAGEM_INCERTO)
             if tentativa == MAX_TENTATIVAS:
                 break
             _log.warning(
@@ -358,7 +394,12 @@ class ClienteNotion:
         )
 
     def criar_pagina(self, parent: dict[str, Any], propriedades: dict[str, Any]) -> dict[str, Any]:
-        return self.requisitar("POST", "/pages", {"parent": parent, "properties": propriedades})
+        return self.requisitar(
+            "POST",
+            "/pages",
+            {"parent": parent, "properties": propriedades},
+            idempotente=False,
+        )
 
     def blocos_filhos(self, bloco_id: str) -> list[dict[str, Any]]:
         """Lista os blocos filhos de uma pagina/bloco, com paginacao."""

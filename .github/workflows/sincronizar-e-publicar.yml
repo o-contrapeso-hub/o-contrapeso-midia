@@ -128,6 +128,9 @@ jobs:
       - name: Testes da legenda (barra publicação se falhar)
         run: python tests/test_legenda.py
 
+      - name: Testes da decisão de publicar (barra publicação se falhar)
+        run: python tests/test_decisao.py
+
       # Os testes dos Stories levam ~1 min (codificam vídeo). Só mudam de resultado se mudar o código,
       # as trilhas/fontes ou os pacotes; então o "passou" fica guardado por código + semana (a semana
       # força uma reconferência com as versões novas dos pacotes). Se o código mudar, roda de novo.

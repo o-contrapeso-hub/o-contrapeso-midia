@@ -44,12 +44,18 @@ def test_diagnostico_de_acesso() -> None:
         eu = cliente.requisitar("GET", "/users/me")
         linhas["integracao dona do token (nome)"] = str(eu.get("name"))[:60]
         linhas["tipo"] = str(eu.get("type"))
+        bot = eu.get("bot") or {}
+        linhas["workspace do token"] = str(bot.get("workspace_name"))[:60]
+        linhas["GET banco Posts do Contrapeso"] = _status(
+            cliente, "GET", "/databases/9a9718f985c34364b6c03d5e42f43e46"
+        )
     except ErroNotion as erro:
         linhas["users/me"] = str(erro.status)
     try:
         busca = cliente.requisitar("POST", "/search", {"query": "Publicador", "page_size": 100})
         resultados = busca.get("results", [])
         linhas["search: total de resultados visiveis"] = str(len(resultados))
+        linhas["search: tipos"] = ",".join(sorted({str(r.get("object")) for r in resultados}))
         achados = {str(r.get("id", "")).replace("-", "") for r in resultados}
         linhas["search: enxerga Publicador Teste"] = str(PAGINA_TESTE in achados)
         linhas["search: enxerga banco Estagios"] = str(ids.BANCO_ESTAGIOS in achados)

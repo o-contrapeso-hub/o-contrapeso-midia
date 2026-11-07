@@ -55,6 +55,12 @@ def test_diagnostico_de_acesso() -> None:
         busca = cliente.requisitar("POST", "/search", {"query": "Publicador", "page_size": 100})
         resultados = busca.get("results", [])
         linhas["search: total de resultados visiveis"] = str(len(resultados))
+        linhas["search: ids visiveis"] = ",".join(
+            sorted(str(r.get("id", "")).replace("-", "")[:32] for r in resultados[:5])
+        )
+        linhas["search: pai das visiveis"] = ",".join(
+            sorted(str((r.get("parent") or {}).get("type")) for r in resultados[:5])
+        )
         linhas["search: tipos"] = ",".join(sorted({str(r.get("object")) for r in resultados}))
         achados = {str(r.get("id", "")).replace("-", "") for r in resultados}
         linhas["search: enxerga Publicador Teste"] = str(PAGINA_TESTE in achados)

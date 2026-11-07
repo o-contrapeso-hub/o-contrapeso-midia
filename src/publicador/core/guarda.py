@@ -37,7 +37,9 @@ Ordem canônica (plano 4.1), parando na primeira que falhar:
 3. ``SEM_DATA`` e depois ``SEM_HORA`` (RF-10);
 4. ``DATA_FUTURA`` (RF-11);
 5. ``SELO_AUSENTE`` e depois ``SELO_DIVERGENTE`` (RF-26);
-6. ``FORA_DA_JANELA`` e depois ``POST_POSTERIOR_JA_SAIU``, por plataforma (RF-24, A-010);
+6. (antes dela, a plataforma pedida: vazia ou fora de ``post.plataformas`` recusa com
+   ``ESTAGIO_NAO_AUTORIZADO``, ver ``_plataforma_do_post``) ``FORA_DA_JANELA`` e depois
+   ``POST_POSTERIOR_JA_SAIU``, por plataforma (RF-24, A-010);
 7. ``SERIE_BLOQUEADA`` (RF-27);
 8. ``SEM_ADAPTADOR`` (RF-37) e depois ``CONEXAO_INVALIDA`` (RF-18);
 9. ``FORMATO_SEM_TIPO`` (RF-43) e depois ``ARTE_INVALIDA`` (RF-14);
@@ -48,7 +50,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 from publicador.artes.armazem import ArmazemDeArtes
@@ -131,6 +133,13 @@ _DETALHES: Final[Mapping[MotivoRecusa, str]] = {
     M.DATA_FUTURA: "horário agendado no futuro (ou instante atual sem fuso)",
     M.SELO_AUSENTE: "post sem selo de confirmação",
     M.SELO_DIVERGENTE: "selo de confirmação não confere com o recálculo",
+    M.FORA_DA_JANELA: (
+        "horário agendado passou da janela de tolerância, ou dados para medi-la ausentes (RF-24)"
+    ),
+    M.POST_POSTERIOR_JA_SAIU: (
+        "post agendado para depois já saiu nesta plataforma, ou publicações dela não "
+        "informadas (A-010)"
+    ),
 }
 
 
@@ -208,7 +217,8 @@ def _futuro(contexto: ContextoGuarda, _plataforma: str) -> MotivoRecusa | None:
     agendado = post.publicar_em if isinstance(post, Post) else None
     if not isinstance(agendado, datetime) or not _tem_fuso(agendado) or not _tem_fuso(agora):
         return M.DATA_FUTURA
-    return M.DATA_FUTURA if agendado > agora else None
+    # Instantes absolutos (UTC): comparar datetimes de mesmo tzinfo ignora ``fold``.
+    return M.DATA_FUTURA if agendado.astimezone(UTC) > agora.astimezone(UTC) else None
 
 
 def _selo_presente(contexto: ContextoGuarda, _plataforma: str) -> MotivoRecusa | None:
@@ -235,6 +245,111 @@ def _selo_confere(contexto: ContextoGuarda, _plataforma: str) -> MotivoRecusa | 
     return None if confere is True else M.SELO_DIVERGENTE
 
 
+# --------------------------------------------------------------------------- parte 2 (T032)
+
+
+def _em_utc(valor: datetime) -> datetime:
+    """Instante absoluto em UTC.
+
+    Comparar ou somar ``datetime`` com o MESMO ``tzinfo`` usa o relógio de parede (ignora
+    ``fold`` e mudanças de horário); convertendo os dois lados para UTC antes, a conta é feita
+    sempre em instantes absolutos (R13).
+    """
+    return valor.astimezone(UTC)
+
+
+def _plataforma_do_post(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """Pré-6. A plataforma pedida é texto não vazio e está em ``post.plataformas``.
+
+    A confirmação (estágio "confirmado" + selo, que cobre ``plataformas``) autoriza o post só
+    nas plataformas listadas nele; pedir outra é publicar sem autorização (RF-10). Não há código
+    próprio em ``MotivoRecusa``, então recusa com ``ESTAGIO_NAO_AUTORIZADO`` e um detalhe
+    específico (``_DETALHES_POR_VERIFICACAO``) para o registro não confundir com o estágio.
+    Comparação exata, sem normalizar caixa ou espaços (falha segura).
+    """
+    post = contexto.post
+    if not isinstance(post, Post) or not isinstance(plataforma, str) or not plataforma.strip():
+        return M.ESTAGIO_NAO_AUTORIZADO
+    plataformas = post.plataformas
+    if not isinstance(plataformas, tuple | list) or plataforma not in plataformas:
+        return M.ESTAGIO_NAO_AUTORIZADO
+    return None
+
+
+def _janela(contexto: ContextoGuarda, _plataforma: str) -> MotivoRecusa | None:
+    """6a. ``agora - publicar_em <= janela_tolerancia_minutos`` (RF-24).
+
+    Janela INCLUSIVA: exatamente a tolerância depois ainda publica; um instante a mais, não.
+    Instantes absolutos (UTC). ``agora`` ou ``publicar_em`` sem fuso, ou tolerância que não é
+    um inteiro positivo (``bool`` não conta), recusam.
+    """
+    post = contexto.post
+    agora = contexto.agora
+    agendado = post.publicar_em if isinstance(post, Post) else None
+    parametros = contexto.parametros
+    tolerancia = (
+        parametros.janela_tolerancia_minutos if isinstance(parametros, Parametros) else None
+    )
+    if (
+        not isinstance(agendado, datetime)
+        or not _tem_fuso(agendado)
+        or not _tem_fuso(agora)
+        or isinstance(tolerancia, bool)
+        or not isinstance(tolerancia, int)
+        or tolerancia <= 0
+    ):
+        return M.FORA_DA_JANELA
+    atraso = _em_utc(agora) - _em_utc(agendado)
+    return None if atraso <= timedelta(minutes=tolerancia) else M.FORA_DA_JANELA
+
+
+def _ordem(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """6b. Nenhum post agendado para DEPOIS deste já saiu NESTA plataforma (RF-24, A-010).
+
+    * Só a lista da plataforma pedida conta; o que saiu em outra plataforma não importa.
+    * Chave da plataforma AUSENTE do mapeamento = informação não fornecida: RECUSA (falha
+      segura). "Nenhum publicado" se diz com a chave presente e tupla vazia.
+    * Post anterior já publicado não impede. O próprio post (mesmo ``post_id``) é ignorado:
+      repetir publicação é assunto da verificação 10 (RF-12, RF-38).
+    * Empate (mesmo instante absoluto) NÃO é "posterior": não bloqueia. Posts agendados para o
+      mesmo instante não têm ordem definida entre si.
+    * Item malformado (tipo inesperado, ``post_id`` vazio, horário sem fuso) recusa: não há
+      como provar que não é posterior.
+    """
+    post = contexto.post
+    publicados = contexto.publicados_por_plataforma
+    if not isinstance(post, Post) or not isinstance(post.id, str) or not post.id.strip():
+        return M.POST_POSTERIOR_JA_SAIU
+    agendado = post.publicar_em
+    if not isinstance(agendado, datetime) or not _tem_fuso(agendado):
+        return M.POST_POSTERIOR_JA_SAIU
+    if not isinstance(publicados, Mapping) or plataforma not in publicados:
+        return M.POST_POSTERIOR_JA_SAIU
+    lista = publicados[plataforma]
+    if not isinstance(lista, tuple | list):
+        return M.POST_POSTERIOR_JA_SAIU
+    meu_instante = _em_utc(agendado)
+    for item in lista:
+        if (
+            not isinstance(item, PublicacaoConhecida)
+            or not isinstance(item.post_id, str)
+            or not item.post_id.strip()
+            or not _tem_fuso(item.agendado_para)
+        ):
+            return M.POST_POSTERIOR_JA_SAIU
+        if item.post_id == post.id:
+            continue
+        if _em_utc(item.agendado_para) > meu_instante:
+            return M.POST_POSTERIOR_JA_SAIU
+    return None
+
+
+# Detalhe específico de uma verificação que reaproveita um motivo de outra (I-1: texto fixo).
+_DETALHES_POR_VERIFICACAO: Final[Mapping[Verificacao, str]] = {
+    _plataforma_do_post: "plataforma pedida vazia ou fora das plataformas confirmadas do post",
+}
+
+
 # Ordem canônica (plano 4.1). Cada item: (verificação, motivo usado se ela levantar exceção).
 # As T032 a T034 acrescentam as verificações 6 a 10 AO FINAL, na ordem do docstring do módulo.
 _VERIFICACOES: Final[tuple[tuple[Verificacao, MotivoRecusa], ...]] = (
@@ -246,21 +361,31 @@ _VERIFICACOES: Final[tuple[tuple[Verificacao, MotivoRecusa], ...]] = (
     (_futuro, M.DATA_FUTURA),  # 4
     (_selo_presente, M.SELO_AUSENTE),  # 5
     (_selo_confere, M.SELO_DIVERGENTE),  # 5
+    (_plataforma_do_post, M.ESTAGIO_NAO_AUTORIZADO),  # pré-6 (plataforma pedida)
+    (_janela, M.FORA_DA_JANELA),  # 6
+    (_ordem, M.POST_POSTERIOR_JA_SAIU),  # 6
 )
 
-# Parte 1 = T031 (verificações 1 a 5); partes 2 a 4 = T032 a T034 (verificações 6 a 10).
-_PARTES_IMPLEMENTADAS: Final = 1
+# Parte 1 = T031 (verificações 1 a 5); parte 2 = T032 (verificação 6); partes 3 e 4 = T033 e
+# T034 (verificações 7 a 10).
+_PARTES_IMPLEMENTADAS: Final = 2
 _PARTES_TOTAIS: Final = 4
 
 
-def _primeira_recusa(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+def _primeira_recusa(contexto: ContextoGuarda, plataforma: str) -> tuple[MotivoRecusa, str] | None:
+    """Motivo e detalhe (fixo, I-1) da primeira verificação que falhar, ou ``None``."""
     for verificacao, motivo_em_erro in _VERIFICACOES:
         try:
             motivo = verificacao(contexto, plataforma)
         except Exception:  # falha segura: erro inesperado recusa com o motivo da verificação
-            return motivo_em_erro
+            motivo = motivo_em_erro
         if motivo is not None:
-            return motivo if isinstance(motivo, MotivoRecusa) else motivo_em_erro
+            if not isinstance(motivo, MotivoRecusa):
+                motivo = motivo_em_erro
+            detalhe = _DETALHES_POR_VERIFICACAO.get(verificacao) or _DETALHES.get(
+                motivo, motivo.value
+            )
+            return motivo, detalhe
     return None
 
 
@@ -272,12 +397,13 @@ def avaliar(contexto: ContextoGuarda, plataforma: str) -> ResultadoGuarda:
     verificações existentes NÃO é liberado: levanta ``GuardaIncompleta`` (ver docstring do
     módulo). Fora isso, nunca levanta exceção (falha segura).
     """
-    motivo = _primeira_recusa(contexto, plataforma)
-    if motivo is not None:
-        return ResultadoGuarda.recusar(motivo, detalhe=_DETALHES.get(motivo, motivo.value))
+    recusa = _primeira_recusa(contexto, plataforma)
+    if recusa is not None:
+        motivo, detalhe = recusa
+        return ResultadoGuarda.recusar(motivo, detalhe=detalhe)
     if _PARTES_IMPLEMENTADAS < _PARTES_TOTAIS:
         raise GuardaIncompleta(
             f"guarda incompleta: parte {_PARTES_IMPLEMENTADAS + 1} de {_PARTES_TOTAIS} "
-            "(verificações 6 a 10, T032 a T034) ainda não implementada; nada é liberado"
+            "(verificações 7 a 10, T033 e T034) ainda não implementada; nada é liberado"
         )
     return ResultadoGuarda.permitir()

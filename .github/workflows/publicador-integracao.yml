@@ -1,0 +1,53 @@
+# Workflow para instalar na `main` do repositório PÚBLICO o-contrapeso-midia.
+# Roda os testes de integração do Publicador contra o workspace de TESTE do Notion.
+#
+# Por que cada restrição existe (os logs deste repositório são públicos):
+# - Só `workflow_dispatch`, sem inputs: ninguém escolhe ref nem comando; gatilhos
+#   automáticos ou de PRs poderiam rodar código de terceiros com o secret.
+# - `permissions: contents: read`: o GITHUB_TOKEN não escreve em nada.
+# - `concurrency` sem cancelar: execuções não se sobrepõem (evita corrida no Notion)
+#   e uma execução em andamento não é interrompida no meio da limpeza.
+# - `ref: publicador` FIXO e `persist-credentials: false`: só o código revisado dessa
+#   branch roda, e o token do git não fica no disco para os passos seguintes.
+# - Timeout de 10 minutos: limita o tempo de exposição do secret.
+# - O secret NOTION_TOKEN entra como NOTION_TOKEN_TESTE SOMENTE no passo dos testes.
+# - Proibido neste arquivo: depuração com eco de comandos, listagem de variáveis de
+#   ambiente, upload de artefatos e qualquer repasse do secret a outros passos.
+# - Compartilhe com a integração do Notion SOMENTE a página "Publicador · Teste";
+#   assim o token só alcança o workspace de testes, nunca os posts reais.
+
+name: Publicador - integração
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publicador-integracao
+  cancel-in-progress: false
+
+jobs:
+  integracao:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+        with:
+          ref: publicador
+          persist-credentials: false
+
+      - name: Instalar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar o projeto
+        run: pip install -e ".[dev]"
+
+      - name: Testes de integração
+        env:
+          NOTION_TOKEN_TESTE: ${{ secrets.NOTION_TOKEN }}
+        run: python -m pytest tests/integracao -m integracao -q --tb=line -p no:cacheprovider

@@ -2,8 +2,8 @@
 RF-37, RF-39, RF-43; regra I-2).
 
 Implementação em partes: T030 fixou tipos, assinatura e contrato (``tests/test_guarda.py``);
-T031 (parte 1) implementa as verificações 1 a 5; T032 a T034 (partes 2 a 4) acrescentam as
-verificações 6 a 10 em ``_VERIFICACOES``, na ordem canônica.
+T031 (parte 1) implementa as verificações 1 a 5; T032 (parte 2) a 6; T033 (parte 3) a 7; T034
+(parte 4) acrescenta as verificações 8 a 10 em ``_VERIFICACOES``, na ordem canônica.
 
 **Guarda incompleta nunca libera (decisão de segurança da T031).** Enquanto
 ``_PARTES_IMPLEMENTADAS < _PARTES_TOTAIS``, um post que passa em TODAS as verificações já
@@ -64,6 +64,7 @@ from publicador.core.modelos import (
     PapelEstagio,
     Post,
     ResultadoGuarda,
+    Serie,
 )
 from publicador.core.selo import verificar_selo
 from publicador.notion.bancos import Configuracao
@@ -139,6 +140,10 @@ _DETALHES: Final[Mapping[MotivoRecusa, str]] = {
     M.POST_POSTERIOR_JA_SAIU: (
         "post agendado para depois já saiu nesta plataforma, ou publicações dela não "
         "informadas (A-010)"
+    ),
+    M.SERIE_BLOQUEADA: (
+        "série de continuidade com post anterior não publicado, ou série ou ordem na série "
+        "ausente, ambígua ou repetida (RF-27)"
     ),
 }
 
@@ -344,6 +349,104 @@ def _ordem(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
     return None
 
 
+# --------------------------------------------------------------------------- parte 3 (T033)
+
+
+def _ordem_valida(valor: object) -> bool:
+    """Ordem na série: inteiro positivo (``bool`` não conta)."""
+    return isinstance(valor, int) and not isinstance(valor, bool) and valor >= 1
+
+
+def _serie_da_configuracao(contexto: ContextoGuarda, nome: str) -> Serie | None:
+    """A ÚNICA série da configuração com esse nome exato, ou ``None`` (ausente, ambígua ou
+    configuração com item malformado: falha segura, a guarda não adivinha qual vale)."""
+    configuracao = contexto.configuracao
+    if not isinstance(configuracao, Configuracao) or not isinstance(configuracao.series, Mapping):
+        return None
+    series = list(configuracao.series.values())
+    if any(not isinstance(s, Serie) or not isinstance(s.continuidade, bool) for s in series):
+        return None
+    achadas = [s for s in series if s.nome == nome]
+    return achadas[0] if len(achadas) == 1 else None
+
+
+def _serie(contexto: ContextoGuarda, _plataforma: str) -> MotivoRecusa | None:
+    """7. Série de continuidade: todos os posts ANTERIORES já publicados (RF-27).
+
+    * Post sem série (``serie is None``) não é bloqueado. Série vazia ou de tipo inesperado,
+      série fora da configuração ou ambígua (mais de uma com o mesmo nome) recusam.
+    * Série SEM continuidade nunca bloqueia (RF-27): os posts não dependem uns dos outros.
+    * Série COM continuidade: o post precisa de ``ordem_na_serie`` inteira positiva. Cada
+      post ANTERIOR (ordem menor) em ``posts_da_serie`` precisa estar num estágio de papel
+      ``publicado`` (RF-35: o sucesso em modo privado também leva a esse papel). Qualquer outro
+      papel bloqueia: ``falha`` (falhou), ``cancelado``, ``autorizado`` (ainda não saiu, ou
+      perdeu a janela de 2 horas), ``pronto``, ``pauta``. Posteriores não importam.
+    * Lacunas na ordem (1, 3, 7) são aceitas; ordem repetida (inclusive a do próprio post) ou
+      ausente/inválida em qualquer post da série recusa: não há como saber quem vem antes.
+    * O próprio post (mesmo ``id``) na lista é ignorado. Post de OUTRA série misturado na lista
+      não conta (é ignorado, sem validar sua ordem). Item que não é ``Post`` recusa.
+
+    **Liberação manual (RF-27; spec, critério de aceite de RF-27 e esclarecimento 11.5).** A
+    spec diz só que o bloqueio "pode ser liberado manualmente pelo usuário, alterando, no
+    Notion, o status do post que causou o bloqueio", sem dizer PARA QUAL status. A guarda é
+    pura e relê o mundo a cada execução, sem estado persistido de "bloqueio" ou "liberação":
+    a liberação acontece sozinha quando o post bloqueador deixa de bloquear. Interpretação
+    adotada (a MAIS CONSERVADORA, que libera menos): só libera quando o post bloqueador passa
+    a um estágio de papel ``publicado`` (por exemplo, o usuário publicou à mão e marcou). Mudar
+    para ``cancelado``, ``falha``, ``pronto``, ``pauta`` ou de volta a ``confirmado`` NÃO libera,
+    porque a própria RF-27 diz que falha e cancelamento bloqueiam e que um post só sai se os
+    anteriores "já tiverem sido publicados". Efeito colateral, não previsto como liberação pela
+    spec: tirar o bloqueador da série ou reordená-lo para depois do post (HU-09) também faz
+    a guarda deixar de vê-lo como anterior. PENDENTE de confirmação com o usuário.
+
+    Limite: a guarda só vê o que o chamador entrega em ``posts_da_serie``; um anterior omitido
+    pelo chamador não é detectado (é responsabilidade de quem monta o contexto).
+    """
+    post = contexto.post
+    if not isinstance(post, Post):
+        return M.SERIE_BLOQUEADA
+    nome = post.serie
+    if nome is None:
+        return None  # post único
+    if not isinstance(nome, str) or not nome.strip():
+        return M.SERIE_BLOQUEADA
+    serie = _serie_da_configuracao(contexto, nome)
+    if serie is None:
+        return M.SERIE_BLOQUEADA
+    if serie.continuidade is False:
+        return None
+    minha_ordem = post.ordem_na_serie
+    if not _ordem_valida(minha_ordem) or not isinstance(post.id, str) or not post.id.strip():
+        return M.SERIE_BLOQUEADA
+    assert isinstance(minha_ordem, int)  # garantido por _ordem_valida (para o mypy)
+    irmaos = contexto.posts_da_serie
+    if not isinstance(irmaos, tuple | list):
+        return M.SERIE_BLOQUEADA
+    ordens_vistas: set[int] = {minha_ordem}
+    anteriores: list[Post] = []
+    for irmao in irmaos:
+        if not isinstance(irmao, Post):
+            return M.SERIE_BLOQUEADA
+        if irmao.id == post.id:
+            continue  # o próprio post não bloqueia a si mesmo
+        if irmao.serie != nome:
+            continue  # post de outra série não conta
+        ordem = irmao.ordem_na_serie
+        if not _ordem_valida(ordem):
+            return M.SERIE_BLOQUEADA
+        assert isinstance(ordem, int)
+        if ordem in ordens_vistas:
+            return M.SERIE_BLOQUEADA  # ordem repetida: não há ordem definida
+        ordens_vistas.add(ordem)
+        if ordem < minha_ordem:
+            anteriores.append(irmao)
+    for anterior in anteriores:
+        estagio = anterior.estagio
+        if not isinstance(estagio, Estagio) or estagio.papel is not PapelEstagio.PUBLICADO:
+            return M.SERIE_BLOQUEADA
+    return None
+
+
 # Detalhe específico de uma verificação que reaproveita um motivo de outra (I-1: texto fixo).
 _DETALHES_POR_VERIFICACAO: Final[Mapping[Verificacao, str]] = {
     _plataforma_do_post: "plataforma pedida vazia ou fora das plataformas confirmadas do post",
@@ -351,7 +454,7 @@ _DETALHES_POR_VERIFICACAO: Final[Mapping[Verificacao, str]] = {
 
 
 # Ordem canônica (plano 4.1). Cada item: (verificação, motivo usado se ela levantar exceção).
-# As T032 a T034 acrescentam as verificações 6 a 10 AO FINAL, na ordem do docstring do módulo.
+# A T034 acrescenta as verificações 8 a 10 AO FINAL, na ordem do docstring do módulo.
 _VERIFICACOES: Final[tuple[tuple[Verificacao, MotivoRecusa], ...]] = (
     (_leitura, M.LEITURA_FALHOU),  # 1
     (_configuracao, M.CONFIG_INCONSISTENTE),  # 1
@@ -364,11 +467,12 @@ _VERIFICACOES: Final[tuple[tuple[Verificacao, MotivoRecusa], ...]] = (
     (_plataforma_do_post, M.ESTAGIO_NAO_AUTORIZADO),  # pré-6 (plataforma pedida)
     (_janela, M.FORA_DA_JANELA),  # 6
     (_ordem, M.POST_POSTERIOR_JA_SAIU),  # 6
+    (_serie, M.SERIE_BLOQUEADA),  # 7
 )
 
-# Parte 1 = T031 (verificações 1 a 5); parte 2 = T032 (verificação 6); partes 3 e 4 = T033 e
-# T034 (verificações 7 a 10).
-_PARTES_IMPLEMENTADAS: Final = 2
+# Parte 1 = T031 (verificações 1 a 5); parte 2 = T032 (verificação 6); parte 3 = T033
+# (verificação 7); parte 4 = T034 (verificações 8 a 10).
+_PARTES_IMPLEMENTADAS: Final = 3
 _PARTES_TOTAIS: Final = 4
 
 
@@ -404,6 +508,6 @@ def avaliar(contexto: ContextoGuarda, plataforma: str) -> ResultadoGuarda:
     if _PARTES_IMPLEMENTADAS < _PARTES_TOTAIS:
         raise GuardaIncompleta(
             f"guarda incompleta: parte {_PARTES_IMPLEMENTADAS + 1} de {_PARTES_TOTAIS} "
-            "(verificações 7 a 10, T033 e T034) ainda não implementada; nada é liberado"
+            "(verificações 8 a 10, T034) ainda não implementada; nada é liberado"
         )
     return ResultadoGuarda.permitir()

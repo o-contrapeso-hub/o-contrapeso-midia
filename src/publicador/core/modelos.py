@@ -8,7 +8,8 @@ Regras invioláveis refletidas aqui:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -103,6 +104,10 @@ class Post:
     selo: str | None = None
     confirmado_em: datetime | None = None
     editado_em: datetime | None = None
+    # Conteúdo específico por plataforma (RF-23); `corpo` guarda o conteúdo comum.
+    secoes_por_plataforma: Mapping[str, str] = field(default_factory=dict, hash=False)
+    # True quando o Notion trouxe só o dia, sem hora: `publicar_em` fica None (sem hora).
+    somente_data: bool = False
 
     def __post_init__(self) -> None:
         _exigir_texto(self.titulo, "título do post")

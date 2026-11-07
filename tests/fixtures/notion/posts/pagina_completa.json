@@ -1,0 +1,200 @@
+{
+  "object": "page",
+  "id": "11111111-2222-4333-8444-555555555555",
+  "created_time": "2026-11-01T12:00:00.000Z",
+  "last_edited_time": "2026-11-07T18:30:00.000Z",
+  "archived": false,
+  "parent": {
+    "type": "database_id",
+    "database_id": "e1b19d71-705b-4fbc-8ecd-5fedb8092fec"
+  },
+  "properties": {
+    "Título": {
+      "id": "title",
+      "type": "title",
+      "title": [
+        {
+          "type": "text",
+          "text": {
+            "content": "Quanto custa a ",
+            "link": null
+          },
+          "annotations": {
+            "bold": false,
+            "italic": false,
+            "strikethrough": false,
+            "underline": false,
+            "code": false,
+            "color": "default"
+          },
+          "plain_text": "Quanto custa a ",
+          "href": null
+        },
+        {
+          "type": "text",
+          "text": {
+            "content": "energia",
+            "link": null
+          },
+          "annotations": {
+            "bold": true,
+            "italic": false,
+            "strikethrough": false,
+            "underline": false,
+            "code": false,
+            "color": "default"
+          },
+          "plain_text": "energia",
+          "href": null
+        }
+      ]
+    },
+    "Estágio": {
+      "id": "e1",
+      "type": "relation",
+      "relation": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000001"
+        }
+      ],
+      "has_more": false
+    },
+    "Formato": {
+      "id": "e2",
+      "type": "relation",
+      "relation": [
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000001"
+        }
+      ],
+      "has_more": false
+    },
+    "Plataformas": {
+      "id": "e3",
+      "type": "multi_select",
+      "multi_select": [
+        {
+          "id": "m1",
+          "name": "Instagram",
+          "color": "pink"
+        },
+        {
+          "id": "m2",
+          "name": "YouTube",
+          "color": "red"
+        }
+      ]
+    },
+    "Data e hora": {
+      "id": "e4",
+      "type": "date",
+      "date": {
+        "start": "2026-11-10T14:00:00.000-03:00",
+        "end": null,
+        "time_zone": null
+      }
+    },
+    "Série": {
+      "id": "e5",
+      "type": "relation",
+      "relation": [
+        {
+          "id": "cccccccc-0000-4000-8000-000000000001"
+        }
+      ],
+      "has_more": false
+    },
+    "Ordem na série": {
+      "id": "e6",
+      "type": "number",
+      "number": 2
+    },
+    "Tema": {
+      "id": "e7",
+      "type": "relation",
+      "relation": [
+        {
+          "id": "dddddddd-0000-4000-8000-000000000001"
+        }
+      ],
+      "has_more": false
+    },
+    "Criado em": {
+      "id": "e8",
+      "type": "created_time",
+      "created_time": "2026-11-01T12:00:00.000Z"
+    },
+    "Ano": {
+      "id": "e9",
+      "type": "formula",
+      "formula": {
+        "type": "number",
+        "number": 2026
+      }
+    },
+    "Mês": {
+      "id": "e10",
+      "type": "formula",
+      "formula": {
+        "type": "number",
+        "number": 11
+      }
+    },
+    "Artes": {
+      "id": "e11",
+      "type": "rich_text",
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "artes/exemplo/capa.png\ninstagram:artes/exemplo/slide2.png",
+            "link": null
+          },
+          "annotations": {
+            "bold": false,
+            "italic": false,
+            "strikethrough": false,
+            "underline": false,
+            "code": false,
+            "color": "default"
+          },
+          "plain_text": "artes/exemplo/capa.png\ninstagram:artes/exemplo/slide2.png",
+          "href": null
+        }
+      ]
+    },
+    "Selo de confirmação": {
+      "id": "e12",
+      "type": "rich_text",
+      "rich_text": [
+        {
+          "type": "text",
+          "text": {
+            "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "link": null
+          },
+          "annotations": {
+            "bold": false,
+            "italic": false,
+            "strikethrough": false,
+            "underline": false,
+            "code": false,
+            "color": "default"
+          },
+          "plain_text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "href": null
+        }
+      ]
+    },
+    "Confirmado em": {
+      "id": "e13",
+      "type": "date",
+      "date": {
+        "start": "2026-11-07T10:00:00.000-03:00",
+        "end": null,
+        "time_zone": null
+      }
+    }
+  },
+  "url": "https://www.notion.so/exemplo"
+}

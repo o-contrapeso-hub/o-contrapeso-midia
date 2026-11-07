@@ -1,0 +1,100 @@
+{
+  "object": "page",
+  "id": "66666666-7777-4888-8999-000000000000",
+  "created_time": "2026-11-01T12:00:00.000Z",
+  "last_edited_time": "2026-11-07T18:30:00.000Z",
+  "archived": false,
+  "parent": {
+    "type": "database_id",
+    "database_id": "e1b19d71-705b-4fbc-8ecd-5fedb8092fec"
+  },
+  "properties": {
+    "Título": {
+      "id": "title",
+      "type": "title",
+      "title": [
+        {
+          "type": "text",
+          "text": {
+            "content": "Ideia: explicar a conta de luz",
+            "link": null
+          },
+          "annotations": {
+            "bold": false,
+            "italic": false,
+            "strikethrough": false,
+            "underline": false,
+            "code": false,
+            "color": "default"
+          },
+          "plain_text": "Ideia: explicar a conta de luz",
+          "href": null
+        }
+      ]
+    },
+    "Estágio": {
+      "id": "e1",
+      "type": "relation",
+      "relation": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002"
+        }
+      ],
+      "has_more": false
+    },
+    "Formato": {
+      "id": "e2",
+      "type": "relation",
+      "relation": [],
+      "has_more": false
+    },
+    "Plataformas": {
+      "id": "e3",
+      "type": "multi_select",
+      "multi_select": []
+    },
+    "Data e hora": {
+      "id": "e4",
+      "type": "date",
+      "date": null
+    },
+    "Série": {
+      "id": "e5",
+      "type": "relation",
+      "relation": [],
+      "has_more": false
+    },
+    "Ordem na série": {
+      "id": "e6",
+      "type": "number",
+      "number": null
+    },
+    "Tema": {
+      "id": "e7",
+      "type": "relation",
+      "relation": [],
+      "has_more": false
+    },
+    "Criado em": {
+      "id": "e8",
+      "type": "created_time",
+      "created_time": "2026-11-05T09:00:00.000Z"
+    },
+    "Artes": {
+      "id": "e11",
+      "type": "rich_text",
+      "rich_text": []
+    },
+    "Selo de confirmação": {
+      "id": "e12",
+      "type": "rich_text",
+      "rich_text": []
+    },
+    "Confirmado em": {
+      "id": "e13",
+      "type": "date",
+      "date": null
+    }
+  },
+  "url": "https://www.notion.so/exemplo"
+}

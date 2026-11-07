@@ -47,13 +47,21 @@ def _normalizar_id(valor: str) -> str:
 
 @dataclass(frozen=True)
 class IdsBancos:
+    """Ids dos bancos do Notion (normalizados: sem hífen, minúsculas).
+
+    ``posts`` e ``execucoes`` (T038) são opcionais para não quebrar quem só lê a
+    configuração; vazio = não informado. Quem precisa deles (o orquestrador) exige-os.
+    """
+
     estagios: str
     formatos: str
     series: str
     temas: str
+    posts: str = ""
+    execucoes: str = ""
 
     def __post_init__(self) -> None:
-        for campo in ("estagios", "formatos", "series", "temas"):
+        for campo in ("estagios", "formatos", "series", "temas", "posts", "execucoes"):
             object.__setattr__(self, campo, _normalizar_id(getattr(self, campo)))
 
 

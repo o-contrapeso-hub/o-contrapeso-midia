@@ -147,6 +147,20 @@ def test_ids_de_banco_com_hifen_e_maiusculas_sao_normalizados() -> None:
     assert f"/databases/{IDS.estagios}/query" in transporte.urls[0]
 
 
+def test_ids_de_posts_e_execucoes_sao_opcionais_e_normalizados() -> None:
+    assert (IDS.posts, IDS.execucoes) == ("", "")
+    ids = IdsBancos(
+        estagios=IDS.estagios,
+        formatos=IDS.formatos,
+        series=IDS.series,
+        temas=IDS.temas,
+        posts="E1B19D71-705B-4FBC-8ECD-5FEDB8092FEC",
+        execucoes="E882E498-7273-430B-8FE7-002CE2811FA4",
+    )
+    assert ids.posts == "e1b19d71705b4fbc8ecd5fedb8092fec"
+    assert ids.execucoes == "e882e4987273430b8fe7002ce2811fa4"
+
+
 def test_funcoes_puras_normalizam_id_em_maiusculas() -> None:
     pagina = carregar("temas")["results"][0]
     pagina["id"] = pagina["id"].upper()

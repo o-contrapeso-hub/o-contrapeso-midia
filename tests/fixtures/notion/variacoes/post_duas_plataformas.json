@@ -1,0 +1,10 @@
+{
+  "titulo": "Post fictício com variações",
+  "plataformas": ["Instagram", "YouTube"],
+  "corpo": "Texto comum a todas.\n\nSegundo parágrafo comum.",
+  "secoes": {
+    "Instagram": "Legenda curta para o Instagram.\n\n#exemplo",
+    "YouTube": "Descrição longa para o YouTube.\nCom duas linhas."
+  },
+  "artes": ["artes/exemplo/capa.png", "instagram:artes/exemplo/slide2.png", "YouTube:artes/exemplo/miniatura.png"]
+}

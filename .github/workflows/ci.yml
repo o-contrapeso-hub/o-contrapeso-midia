@@ -105,4 +105,4 @@ jobs:
           curl -sSfL -o "$pasta/checksums.txt" "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           (cd "$pasta" && grep " ${arquivo}\$" checksums.txt | sha256sum -c -)
           tar -xzf "$pasta/$arquivo" -C "$pasta" gitleaks
-          "$pasta/gitleaks" detect --source . --config .gitleaks.toml --redact
+          "$pasta/gitleaks" detect --source . --config .gitleaks.toml --redact --verbose

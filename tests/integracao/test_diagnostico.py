@@ -41,6 +41,12 @@ def test_diagnostico_de_acesso() -> None:
         ),
     }
     try:
+        eu = cliente.requisitar("GET", "/users/me")
+        linhas["integracao dona do token (nome)"] = str(eu.get("name"))[:60]
+        linhas["tipo"] = str(eu.get("type"))
+    except ErroNotion as erro:
+        linhas["users/me"] = str(erro.status)
+    try:
         busca = cliente.requisitar("POST", "/search", {"query": "Publicador", "page_size": 100})
         resultados = busca.get("results", [])
         linhas["search: total de resultados visiveis"] = str(len(resultados))

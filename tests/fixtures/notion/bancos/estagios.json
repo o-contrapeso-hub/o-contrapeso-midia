@@ -1,0 +1,381 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "page",
+      "id": "00000000-0000-4000-8000-000000000100",
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "last_edited_time": "2026-11-02T12:00:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "last_edited_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "cover": null,
+      "icon": null,
+      "parent": {
+        "type": "database_id",
+        "database_id": "a89a9a3b-f748-4cbf-9d73-ce526e0e4a00"
+      },
+      "archived": false,
+      "in_trash": false,
+      "properties": {
+        "Ordem": {
+          "id": "ordm",
+          "type": "number",
+          "number": 1
+        },
+        "Papel": {
+          "id": "papl",
+          "type": "select",
+          "select": {
+            "id": "s_pau",
+            "name": "pauta",
+            "color": "default"
+          }
+        },
+        "Nome": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "pauta",
+                "link": null
+              },
+              "annotations": {
+                "bold": false,
+                "italic": false,
+                "strikethrough": false,
+                "underline": false,
+                "code": false,
+                "color": "default"
+              },
+              "plain_text": "pauta",
+              "href": null
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/00000000000040008000000000000100"
+    },
+    {
+      "object": "page",
+      "id": "00000000-0000-4000-8000-000000000101",
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "last_edited_time": "2026-11-02T12:00:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "last_edited_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "cover": null,
+      "icon": null,
+      "parent": {
+        "type": "database_id",
+        "database_id": "a89a9a3b-f748-4cbf-9d73-ce526e0e4a00"
+      },
+      "archived": false,
+      "in_trash": false,
+      "properties": {
+        "Ordem": {
+          "id": "ordm",
+          "type": "number",
+          "number": 2
+        },
+        "Papel": {
+          "id": "papl",
+          "type": "select",
+          "select": {
+            "id": "s_pro",
+            "name": "pronto",
+            "color": "default"
+          }
+        },
+        "Nome": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "pronto",
+                "link": null
+              },
+              "annotations": {
+                "bold": false,
+                "italic": false,
+                "strikethrough": false,
+                "underline": false,
+                "code": false,
+                "color": "default"
+              },
+              "plain_text": "pronto",
+              "href": null
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/00000000000040008000000000000101"
+    },
+    {
+      "object": "page",
+      "id": "00000000-0000-4000-8000-000000000102",
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "last_edited_time": "2026-11-02T12:00:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "last_edited_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "cover": null,
+      "icon": null,
+      "parent": {
+        "type": "database_id",
+        "database_id": "a89a9a3b-f748-4cbf-9d73-ce526e0e4a00"
+      },
+      "archived": false,
+      "in_trash": false,
+      "properties": {
+        "Ordem": {
+          "id": "ordm",
+          "type": "number",
+          "number": 3
+        },
+        "Papel": {
+          "id": "papl",
+          "type": "select",
+          "select": {
+            "id": "s_aut",
+            "name": "autorizado",
+            "color": "default"
+          }
+        },
+        "Nome": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "confirmado",
+                "link": null
+              },
+              "annotations": {
+                "bold": false,
+                "italic": false,
+                "strikethrough": false,
+                "underline": false,
+                "code": false,
+                "color": "default"
+              },
+              "plain_text": "confirmado",
+              "href": null
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/00000000000040008000000000000102"
+    },
+    {
+      "object": "page",
+      "id": "00000000-0000-4000-8000-000000000103",
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "last_edited_time": "2026-11-02T12:00:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "last_edited_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "cover": null,
+      "icon": null,
+      "parent": {
+        "type": "database_id",
+        "database_id": "a89a9a3b-f748-4cbf-9d73-ce526e0e4a00"
+      },
+      "archived": false,
+      "in_trash": false,
+      "properties": {
+        "Ordem": {
+          "id": "ordm",
+          "type": "number",
+          "number": 4
+        },
+        "Papel": {
+          "id": "papl",
+          "type": "select",
+          "select": {
+            "id": "s_pub",
+            "name": "publicado",
+            "color": "default"
+          }
+        },
+        "Nome": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "publicado",
+                "link": null
+              },
+              "annotations": {
+                "bold": false,
+                "italic": false,
+                "strikethrough": false,
+                "underline": false,
+                "code": false,
+                "color": "default"
+              },
+              "plain_text": "publicado",
+              "href": null
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/00000000000040008000000000000103"
+    },
+    {
+      "object": "page",
+      "id": "00000000-0000-4000-8000-000000000104",
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "last_edited_time": "2026-11-02T12:00:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "last_edited_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "cover": null,
+      "icon": null,
+      "parent": {
+        "type": "database_id",
+        "database_id": "a89a9a3b-f748-4cbf-9d73-ce526e0e4a00"
+      },
+      "archived": false,
+      "in_trash": false,
+      "properties": {
+        "Ordem": {
+          "id": "ordm",
+          "type": "number",
+          "number": 5
+        },
+        "Papel": {
+          "id": "papl",
+          "type": "select",
+          "select": {
+            "id": "s_fal",
+            "name": "falha",
+            "color": "default"
+          }
+        },
+        "Nome": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "falha na publicação",
+                "link": null
+              },
+              "annotations": {
+                "bold": false,
+                "italic": false,
+                "strikethrough": false,
+                "underline": false,
+                "code": false,
+                "color": "default"
+              },
+              "plain_text": "falha na publicação",
+              "href": null
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/00000000000040008000000000000104"
+    },
+    {
+      "object": "page",
+      "id": "00000000-0000-4000-8000-000000000105",
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "last_edited_time": "2026-11-02T12:00:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "last_edited_by": {
+        "object": "user",
+        "id": "11111111-1111-4111-8111-111111111111"
+      },
+      "cover": null,
+      "icon": null,
+      "parent": {
+        "type": "database_id",
+        "database_id": "a89a9a3b-f748-4cbf-9d73-ce526e0e4a00"
+      },
+      "archived": false,
+      "in_trash": false,
+      "properties": {
+        "Ordem": {
+          "id": "ordm",
+          "type": "number",
+          "number": 6
+        },
+        "Papel": {
+          "id": "papl",
+          "type": "select",
+          "select": {
+            "id": "s_can",
+            "name": "cancelado",
+            "color": "default"
+          }
+        },
+        "Nome": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "cancelado",
+                "link": null
+              },
+              "annotations": {
+                "bold": false,
+                "italic": false,
+                "strikethrough": false,
+                "underline": false,
+                "code": false,
+                "color": "default"
+              },
+              "plain_text": "cancelado",
+              "href": null
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/00000000000040008000000000000105"
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false,
+  "type": "page_or_database",
+  "page_or_database": {}
+}

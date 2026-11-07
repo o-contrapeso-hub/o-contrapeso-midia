@@ -10,7 +10,9 @@
 # - `ref: publicador` FIXO e `persist-credentials: false`: só o código revisado dessa
 #   branch roda, e o token do git não fica no disco para os passos seguintes.
 # - Timeout de 10 minutos: limita o tempo de exposição do secret.
-# - O secret NOTION_TOKEN entra como NOTION_TOKEN_TESTE SOMENTE no passo dos testes.
+# - O secret NOTION_TOKEN_PUBLICADOR_TESTE (integração própria, com acesso só à página de
+#   teste) entra como NOTION_TOKEN_TESTE SOMENTE no passo dos testes. Não use o NOTION_TOKEN
+#   do Contrapeso aqui.
 # - Proibido neste arquivo: depuração com eco de comandos, listagem de variáveis de
 #   ambiente, upload de artefatos e qualquer repasse do secret a outros passos.
 # - Compartilhe com a integração do Notion SOMENTE a página "Publicador · Teste";
@@ -49,5 +51,5 @@ jobs:
 
       - name: Testes de integração
         env:
-          NOTION_TOKEN_TESTE: ${{ secrets.NOTION_TOKEN }}
+          NOTION_TOKEN_TESTE: ${{ secrets.NOTION_TOKEN_PUBLICADOR_TESTE }}
         run: python -m pytest tests/integracao -m integracao -q --tb=line -p no:cacheprovider

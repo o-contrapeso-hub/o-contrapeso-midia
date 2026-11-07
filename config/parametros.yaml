@@ -13,5 +13,5 @@ meta_pontualidade_minutos: 30
 # Fuso horario usado para interpretar datas agendadas.
 fuso_padrao: America/Sao_Paulo
 
-# SUPOSICAO a confirmar: tempo de silencio aceitavel antes de o vigia alertar.
+# Tempo de silencio aceitavel antes de o vigia alertar (confirmado em 07/11/2026).
 limite_silencio_vigia_minutos: 60

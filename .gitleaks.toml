@@ -1,6 +1,16 @@
 # Configuração do gitleaks para o O Publicador.
-# Usa as regras padrão do gitleaks sem allowlist: nenhum caminho ou valor é ignorado.
+# Usa as regras padrão do gitleaks. Nenhum CAMINHO é ignorado; só três VALORES fictícios exatos
+# (usados nos testes de redação e na documentação) são aceitos, ancorados do início ao fim.
 title = "gitleaks - O Publicador"
 
 [extend]
 useDefault = true
+
+[allowlist]
+description = "Valores fictícios exatos de testes e documentação (nunca credenciais reais)"
+regexTarget = "secret"
+regexes = [
+  '''^tok_ficticio_[A-Za-z0-9]+$''',
+  '''^AKIAIOSFODNN7EXAMPLE$''',
+  '''^FALSO_[A-Za-z0-9_]+$''',
+]

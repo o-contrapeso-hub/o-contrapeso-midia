@@ -1,17 +1,14 @@
 """Testes da verificação 7 da guarda: séries de continuidade e liberação manual (T033; RF-27).
 
-Complementam os casos de série de ``tests/test_guarda.py`` (que ficam sob ``xfail`` até a T034).
-Aqui NÃO há ``xfail``: os testes passam de verdade já na T033.
-
-Como contornam ``GuardaIncompleta``: enquanto a guarda está incompleta, ``avaliar`` levanta essa
-exceção para todo post que passa nas verificações existentes (nada é liberado). Por isso:
+Complementam os casos de série de ``tests/test_guarda.py``. Escritos na T033, quando ``avaliar``
+ainda tinha a trava ``GuardaIncompleta`` (removida na T034); por isso:
 
 * os casos de unidade chamam a verificação interna ``_serie`` diretamente;
 * os casos de ponta a ponta usam ``_primeira_recusa`` (o laço de ``avaliar`` sobre
-  ``_VERIFICACOES``, antes da trava): devolve ``(motivo, detalhe)`` ou ``None`` quando todas as
-  verificações existentes passam. O contexto base é válido em TODAS as verificações (inclusive
-  as 8 a 10 da T034), então estes testes continuam válidos depois dela;
-* quando a guarda recusa, ``avaliar`` devolve o resultado normal (sem exceção) e é usado direto.
+  ``_VERIFICACOES``): devolve ``(motivo, detalhe)`` ou ``None`` quando todas as verificações
+  passam. O contexto base é válido em TODAS as verificações (inclusive as 8 a 10 da T034);
+  desde a T034, ``_primeira_recusa(...) is None`` equivale a ``avaliar(...).permitido``;
+* quando a guarda recusa, ``avaliar`` devolve o resultado normal e é usado direto.
 
 Valores fictícios; nada acessa a rede (I-1).
 """
@@ -166,14 +163,14 @@ def _no_post(contexto: ContextoGuarda, **campos: Any) -> ContextoGuarda:
 
 
 def _libera(contexto: ContextoGuarda) -> bool:
-    """A verificação 7 passa E nenhuma verificação existente recusa (antes da trava)."""
+    """A verificação 7 passa E nenhuma verificação recusa (a guarda libera)."""
     return _serie(contexto, PLATAFORMA) is None and _primeira_recusa(contexto, PLATAFORMA) is None
 
 
 def _bloqueia(contexto: ContextoGuarda) -> bool:
     if _serie(contexto, PLATAFORMA) is not M.SERIE_BLOQUEADA:
         return False
-    resultado = avaliar(contexto, PLATAFORMA)  # recusa: não chega à trava, não levanta
+    resultado = avaliar(contexto, PLATAFORMA)  # recusa sem levantar
     return resultado.permitido is False and resultado.motivos == (M.SERIE_BLOQUEADA,)
 
 

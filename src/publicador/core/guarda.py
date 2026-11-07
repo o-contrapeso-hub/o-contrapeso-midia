@@ -1,18 +1,10 @@
 """Guarda de publicação (plano 4.1; RF-10 a RF-12, RF-14, RF-18, RF-24, RF-26, RF-27,
 RF-37, RF-39, RF-43; regra I-2).
 
-Implementação em partes: T030 fixou tipos, assinatura e contrato (``tests/test_guarda.py``);
-T031 (parte 1) implementa as verificações 1 a 5; T032 (parte 2) a 6; T033 (parte 3) a 7; T034
-(parte 4) acrescenta as verificações 8 a 10 em ``_VERIFICACOES``, na ordem canônica.
-
-**Guarda incompleta nunca libera (decisão de segurança da T031).** Enquanto
-``_PARTES_IMPLEMENTADAS < _PARTES_TOTAIS``, um post que passa em TODAS as verificações já
-existentes NÃO é permitido: ``avaliar`` levanta ``GuardaIncompleta`` (subclasse de
-``NotImplementedError``) indicando a parte pendente. É a única exceção que ``avaliar`` deixa sair,
-e só existe até a T034: ela torna impossível que uma guarda parcial devolva "permitido" (nenhum
-post sai em produção) e mantém a suíte verde sob o ``xfail(raises=NotImplementedError)`` dos
-testes. Recusar com um motivo qualquer foi descartado: atribuiria a recusa a uma verificação que
-ainda não existe (motivo falso no registro de execuções). A T034 remove ``GuardaIncompleta``.
+Histórico: T030 fixou tipos, assinatura e contrato (``tests/test_guarda.py``); T031 implementou
+as verificações 1 a 5, T032 a 6, T033 a 7 e T034 as 8 a 10. Com a T034 a guarda está COMPLETA:
+``avaliar`` só devolve ``permitir()`` quando TODAS as verificações de ``_VERIFICACOES`` passam
+(a trava temporária ``GuardaIncompleta`` das T031 a T033 foi removida).
 
 Contrato:
 
@@ -44,6 +36,10 @@ Ordem canônica (plano 4.1), parando na primeira que falhar:
 8. ``SEM_ADAPTADOR`` (RF-37) e depois ``CONEXAO_INVALIDA`` (RF-18);
 9. ``FORMATO_SEM_TIPO`` (RF-43) e depois ``ARTE_INVALIDA`` (RF-14);
 10. ``EXECUCAO_EXISTENTE`` (RF-12, RF-38).
+
+``SEM_ADAPTADOR`` aparece no plano 4.1 antes de ``CONEXAO_INVALIDA`` e ``FORMATO_SEM_TIPO``
+antes de ``ARTE_INVALIDA`` (a compatibilidade da arte depende do tipo na plataforma; decisão
+da T030). Detalhes de cada uma nas docstrings das funções.
 """
 
 from __future__ import annotations
@@ -58,6 +54,8 @@ from publicador.core.config import Parametros
 from publicador.core.confirmacao import exigir_estagio_autorizador
 from publicador.core.modelos import (
     Conexao,
+    ConexaoEstado,
+    EstadoExecucao,
     Estagio,
     Execucao,
     MotivoRecusa,
@@ -69,7 +67,7 @@ from publicador.core.modelos import (
 from publicador.core.selo import verificar_selo
 from publicador.notion.bancos import Configuracao
 
-__all__ = ["ContextoGuarda", "GuardaIncompleta", "PublicacaoConhecida", "avaliar"]
+__all__ = ["ContextoGuarda", "PublicacaoConhecida", "avaliar"]
 
 
 @dataclass(frozen=True)
@@ -112,13 +110,6 @@ class ContextoGuarda:
     problemas_de_midia: Mapping[str, tuple[str, ...]]
 
 
-class GuardaIncompleta(NotImplementedError):
-    """Todas as verificações existentes passaram, mas faltam partes da guarda: NÃO libera.
-
-    Temporária (T031 a T033); some na T034, quando ``avaliar`` passa a nunca levantar.
-    """
-
-
 # Uma verificação olha UMA condição e devolve o motivo da recusa ou ``None`` (passou).
 Verificacao = Callable[["ContextoGuarda", str], MotivoRecusa | None]
 
@@ -144,6 +135,18 @@ _DETALHES: Final[Mapping[MotivoRecusa, str]] = {
     M.SERIE_BLOQUEADA: (
         "série de continuidade com post anterior não publicado, ou série ou ordem na série "
         "ausente, ambígua ou repetida (RF-27)"
+    ),
+    M.SEM_ADAPTADOR: "plataforma sem adaptador disponível (RF-37)",
+    M.CONEXAO_INVALIDA: (
+        "conexão da plataforma ausente, não ativa, vencida ou com validade desconhecida (RF-18)"
+    ),
+    M.FORMATO_SEM_TIPO: (
+        "formato do post ausente ou sem tipo de publicação definido para a plataforma (RF-43)"
+    ),
+    M.ARTE_INVALIDA: "mídia não validada ou com problemas para a plataforma (RF-14)",
+    M.EXECUCAO_EXISTENTE: (
+        "já existe execução bloqueante deste post nesta plataforma, ou lista de execuções "
+        "inconsistente (RF-12, RF-38)"
     ),
 }
 
@@ -447,6 +450,141 @@ def _serie(contexto: ContextoGuarda, _plataforma: str) -> MotivoRecusa | None:
     return None
 
 
+# --------------------------------------------------------------------------- parte 4 (T034)
+
+
+def _texto_valido(valor: object) -> bool:
+    return isinstance(valor, str) and bool(valor.strip())
+
+
+def _adaptador(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """8a. A plataforma pedida tem adaptador (RF-37, A-008).
+
+    Comparação exata (como em ``_plataforma_do_post``): "instagram" não casa com "Instagram".
+    Só ``set``/``frozenset`` são aceitos: com ``str`` ou lista de tipo inesperado, ``in``
+    poderia casar por substring; qualquer outro tipo recusa.
+    """
+    com_adaptador = contexto.plataformas_com_adaptador
+    if not _texto_valido(plataforma) or not isinstance(com_adaptador, frozenset | set):
+        return M.SEM_ADAPTADOR
+    return None if plataforma in com_adaptador else M.SEM_ADAPTADOR
+
+
+def _conexao(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """8b. A conexão da plataforma é válida AGORA (RF-18).
+
+    Recusa quando: a plataforma não está em ``conexoes`` (estado desconhecido = inválida);
+    o item não é ``Conexao`` ou é de outra plataforma; o estado não é ``ATIVA`` (``EXPIRADA``
+    e ``INVALIDA`` recusam); ``expira_em`` ausente ou sem fuso (validade desconhecida não
+    prova que vale); ``agora`` sem fuso; ou a conexão VENCEU mesmo marcada ativa
+    (``expira_em <= agora`` em instantes absolutos: no instante exato do vencimento já não
+    vale). ``verificado_em`` não é exigido (o plano não fixa idade máxima da verificação).
+    """
+    conexoes = contexto.conexoes
+    agora = contexto.agora
+    if not _texto_valido(plataforma) or not isinstance(conexoes, Mapping):
+        return M.CONEXAO_INVALIDA
+    if plataforma not in conexoes:
+        return M.CONEXAO_INVALIDA
+    conexao = conexoes[plataforma]
+    if (
+        not isinstance(conexao, Conexao)
+        or conexao.plataforma != plataforma
+        or conexao.estado is not ConexaoEstado.ATIVA
+    ):
+        return M.CONEXAO_INVALIDA
+    expira_em = conexao.expira_em
+    if not isinstance(expira_em, datetime) or not _tem_fuso(expira_em) or not _tem_fuso(agora):
+        return M.CONEXAO_INVALIDA
+    return None if _em_utc(expira_em) > _em_utc(agora) else M.CONEXAO_INVALIDA
+
+
+def _formato(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """9a. O formato do post tem tipo de publicação definido para a plataforma (RF-43, A-023).
+
+    Recusa: post sem formato (ou vazio); ``tipos_por_formato`` que não é mapeamento; formato
+    fora dele; mapeamento interno malformado; plataforma sem tipo; tipo vazio ou não texto.
+    Comparação exata de nomes de formato e plataforma.
+    """
+    post = contexto.post
+    tipos = contexto.tipos_por_formato
+    formato = post.formato if isinstance(post, Post) else None
+    if not isinstance(formato, str) or not formato.strip() or not _texto_valido(plataforma):
+        return M.FORMATO_SEM_TIPO
+    if not isinstance(tipos, Mapping) or formato not in tipos:
+        return M.FORMATO_SEM_TIPO
+    por_plataforma = tipos[formato]
+    if not isinstance(por_plataforma, Mapping) or plataforma not in por_plataforma:
+        return M.FORMATO_SEM_TIPO
+    return None if _texto_valido(por_plataforma[plataforma]) else M.FORMATO_SEM_TIPO
+
+
+def _arte(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """9b. A mídia foi validada para a plataforma e não tem problemas (RF-14).
+
+    Plataforma ausente de ``problemas_de_midia`` = mídia NÃO validada: recusa. Lista vazia
+    (tupla ou lista) passa; qualquer problema listado recusa (o texto do problema nunca vai
+    para o ``detalhe``, I-1). Tipo inesperado recusa.
+    """
+    problemas = contexto.problemas_de_midia
+    if not _texto_valido(plataforma) or not isinstance(problemas, Mapping):
+        return M.ARTE_INVALIDA
+    if plataforma not in problemas:
+        return M.ARTE_INVALIDA
+    lista = problemas[plataforma]
+    if not isinstance(lista, tuple | list) or len(lista) > 0:
+        return M.ARTE_INVALIDA
+    return None
+
+
+# Estados de execução anterior que impedem publicar de novo (RF-12, RF-38; decisão da T030).
+_ESTADOS_QUE_BLOQUEIAM: Final[frozenset[EstadoExecucao]] = frozenset(
+    {
+        EstadoExecucao.SUCESSO,
+        EstadoExecucao.SUCESSO_MODO_PRIVADO,
+        EstadoExecucao.INICIADA,
+        EstadoExecucao.INCERTO,
+    }
+)
+
+
+def _execucao(contexto: ContextoGuarda, plataforma: str) -> MotivoRecusa | None:
+    """10. Nenhuma execução anterior do MESMO post e plataforma impede publicar (RF-12, RF-38).
+
+    * Bloqueiam, de QUALQUER data (A-018): ``SUCESSO``, ``SUCESSO_MODO_PRIVADO`` (já saiu),
+      ``INICIADA`` (pode estar saindo, ou caiu no meio do envio) e ``INCERTO`` (pode ter
+      saído; só resolução manual libera, RF-38).
+    * Não bloqueiam: ``RECUSADA`` e ``SIMULADA`` (nada foi enviado; decisão da T030).
+    * ``FALHA`` e ``NAO_EXECUTADO`` também NÃO bloqueiam por si (decisão da T034). ``FALHA`` só
+      é registrada com certeza de que não saiu (falha transitória ou permanente; dúvida é
+      ``INCERTO``), e ``NAO_EXECUTADO`` nem chegou a enviar. Bloquear aqui impediria a nova
+      tentativa segura (RF-25, plano 2 passo 5, T040) e a republicação das plataformas
+      pendentes após nova confirmação (A-003). O limite de UMA nova tentativa, a consulta
+      prévia à plataforma e o intervalo de 30 minutos são da T040, não desta guarda; depois da
+      segunda falha o post vai ao estágio de papel ``falha`` (RF-30) e a verificação 2 recusa.
+    * A lista precisa ser tupla ou lista. Item que não é ``Execucao``, com estado fora de
+      ``EstadoExecucao``, ou de OUTRO post ou OUTRA plataforma, é erro do chamador (o contrato
+      diz "do mesmo post e plataforma"): recusa, porque não há como saber o que foi omitido.
+    """
+    post = contexto.post
+    execucoes = contexto.execucoes_anteriores
+    if not isinstance(post, Post) or not _texto_valido(post.id) or not _texto_valido(plataforma):
+        return M.EXECUCAO_EXISTENTE
+    if not isinstance(execucoes, tuple | list):
+        return M.EXECUCAO_EXISTENTE
+    for execucao in execucoes:
+        if (
+            not isinstance(execucao, Execucao)
+            or not isinstance(execucao.estado, EstadoExecucao)
+            or execucao.post_id != post.id
+            or execucao.plataforma != plataforma
+        ):
+            return M.EXECUCAO_EXISTENTE
+        if execucao.estado in _ESTADOS_QUE_BLOQUEIAM:
+            return M.EXECUCAO_EXISTENTE
+    return None
+
+
 # Detalhe específico de uma verificação que reaproveita um motivo de outra (I-1: texto fixo).
 _DETALHES_POR_VERIFICACAO: Final[Mapping[Verificacao, str]] = {
     _plataforma_do_post: "plataforma pedida vazia ou fora das plataformas confirmadas do post",
@@ -454,7 +592,7 @@ _DETALHES_POR_VERIFICACAO: Final[Mapping[Verificacao, str]] = {
 
 
 # Ordem canônica (plano 4.1). Cada item: (verificação, motivo usado se ela levantar exceção).
-# A T034 acrescenta as verificações 8 a 10 AO FINAL, na ordem do docstring do módulo.
+# ``avaliar`` só permite quando TODAS passam: remover um item daqui enfraquece a guarda (I-2).
 _VERIFICACOES: Final[tuple[tuple[Verificacao, MotivoRecusa], ...]] = (
     (_leitura, M.LEITURA_FALHOU),  # 1
     (_configuracao, M.CONFIG_INCONSISTENTE),  # 1
@@ -468,12 +606,12 @@ _VERIFICACOES: Final[tuple[tuple[Verificacao, MotivoRecusa], ...]] = (
     (_janela, M.FORA_DA_JANELA),  # 6
     (_ordem, M.POST_POSTERIOR_JA_SAIU),  # 6
     (_serie, M.SERIE_BLOQUEADA),  # 7
+    (_adaptador, M.SEM_ADAPTADOR),  # 8
+    (_conexao, M.CONEXAO_INVALIDA),  # 8
+    (_formato, M.FORMATO_SEM_TIPO),  # 9
+    (_arte, M.ARTE_INVALIDA),  # 9
+    (_execucao, M.EXECUCAO_EXISTENTE),  # 10
 )
-
-# Parte 1 = T031 (verificações 1 a 5); parte 2 = T032 (verificação 6); parte 3 = T033
-# (verificação 7); parte 4 = T034 (verificações 8 a 10).
-_PARTES_IMPLEMENTADAS: Final = 3
-_PARTES_TOTAIS: Final = 4
 
 
 def _primeira_recusa(contexto: ContextoGuarda, plataforma: str) -> tuple[MotivoRecusa, str] | None:
@@ -497,17 +635,14 @@ def avaliar(contexto: ContextoGuarda, plataforma: str) -> ResultadoGuarda:
     """Decide se ``contexto.post`` pode ser publicado AGORA em ``plataforma``.
 
     Função pura; recusa na primeira verificação que falhar (ordem canônica), com UM motivo e
-    detalhe fixo (I-1). Enquanto a guarda estiver incompleta, quem passa em todas as
-    verificações existentes NÃO é liberado: levanta ``GuardaIncompleta`` (ver docstring do
-    módulo). Fora isso, nunca levanta exceção (falha segura).
+    detalhe fixo (I-1). Só permite quando TODAS as verificações passam. Nunca levanta
+    exceção (falha segura): um erro inesperado fora das verificações também recusa.
     """
-    recusa = _primeira_recusa(contexto, plataforma)
+    try:
+        recusa = _primeira_recusa(contexto, plataforma)
+    except Exception:  # falha segura: nunca deveria ocorrer (as verificações já se protegem)
+        return ResultadoGuarda.recusar(M.LEITURA_FALHOU, detalhe=_DETALHES[M.LEITURA_FALHOU])
     if recusa is not None:
         motivo, detalhe = recusa
         return ResultadoGuarda.recusar(motivo, detalhe=detalhe)
-    if _PARTES_IMPLEMENTADAS < _PARTES_TOTAIS:
-        raise GuardaIncompleta(
-            f"guarda incompleta: parte {_PARTES_IMPLEMENTADAS + 1} de {_PARTES_TOTAIS} "
-            "(verificações 8 a 10, T034) ainda não implementada; nada é liberado"
-        )
     return ResultadoGuarda.permitir()

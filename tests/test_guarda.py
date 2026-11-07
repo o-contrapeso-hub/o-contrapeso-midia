@@ -1,7 +1,7 @@
 """Testes da guarda de publicação (T030; plano 4.1; regra I-2).
 
-Escritos ANTES da guarda: hoje todos falham com ``NotImplementedError``. As T031 a T034 a
-implementam em partes, sem mudar estes testes.
+Escritos ANTES da guarda; as T031 a T034 a implementaram em partes, sem mudar estes testes.
+Desde a T034 todos passam de verdade (sem ``xfail``).
 
 Interface testada (decisão desta tarefa, ver ``publicador.core.guarda``):
 
@@ -104,11 +104,6 @@ ESTAGIOS: dict[str, Estagio] = {
     "est-cancelado": Estagio("cancelado", PapelEstagio.CANCELADO),
 }
 AUTORIZADO = ESTAGIOS["est-confirmado"]
-
-# T030: a guarda ainda não existe (``avaliar`` levanta NotImplementedError). Para o CI não ficar
-# vermelho até as T031 a T034, os testes ficam como "falha esperada". REMOVER este marcador na
-# T034 (quando a guarda estiver completa): a partir daí todos devem passar de verdade.
-pytestmark = pytest.mark.xfail(raises=NotImplementedError, strict=False, reason="guarda T031-T034")
 
 
 def _estagio(papel: PapelEstagio) -> Estagio:

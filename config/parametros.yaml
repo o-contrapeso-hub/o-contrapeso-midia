@@ -1,0 +1,17 @@
+# Parametros operacionais do publicador. Nenhum segredo aqui.
+# Todos os valores em minutos, exceto fuso_padrao (nome IANA).
+
+# Tolerancia para considerar um post publicado no horario agendado.
+janela_tolerancia_minutos: 120
+
+# Intervalo entre tentativas quando uma publicacao falha.
+nova_tentativa_minutos: 30
+
+# Meta de pontualidade (deve ser <= janela_tolerancia_minutos).
+meta_pontualidade_minutos: 30
+
+# Fuso horario usado para interpretar datas agendadas.
+fuso_padrao: America/Sao_Paulo
+
+# SUPOSICAO a confirmar: tempo de silencio aceitavel antes de o vigia alertar.
+limite_silencio_vigia_minutos: 60

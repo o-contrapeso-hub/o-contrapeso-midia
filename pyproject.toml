@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "publicador"
+version = "0.1.0"
+description = "Automatiza a publicação de posts (Instagram, TikTok, YouTube) a partir do Notion."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "hypothesis",
+    "ruff",
+    "mypy",
+    "types-PyYAML",
+    "pip-audit",
+    "pip-licenses",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+python_version = "3.12"

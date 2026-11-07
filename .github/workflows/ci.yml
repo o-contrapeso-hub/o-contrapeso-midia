@@ -1,0 +1,108 @@
+# CI do O Publicador.
+#
+# Pendente: as actions abaixo estão fixadas por tag de versão maior. Depois
+# de validar no GitHub, fixe cada uma pelo SHA completo do commit
+# (ex.: actions/checkout@<sha> # v4). Versões de terceiros (gitleaks) também
+# devem ter o SHA-256 do binário fixado, não só a versão.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  qualidade-e-seguranca:
+    name: Lint, tipos, testes e segurança
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+        with:
+          # Histórico completo: necessário para o gitleaks varrer todos os commits.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Instalar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar o projeto e as ferramentas de desenvolvimento
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint (ruff check)
+        run: ruff check .
+
+      - name: Formatação (ruff format --check)
+        run: ruff format --check .
+
+      - name: Tipos (mypy)
+        run: mypy src
+
+      - name: Testes (pytest)
+        run: pytest
+
+      - name: Vulnerabilidades conhecidas (pip-audit)
+        # --skip-editable: o próprio pacote instalado em modo editável não está no PyPI.
+        run: pip-audit --skip-editable
+
+      - name: Licenças das dependências (lista permitida)
+        # Permitidas: MIT, BSD, Apache, PSF, ISC, MPL.
+        # Falha se alguma licença contiver GPL, LGPL, AGPL ou GNU, ou se a
+        # licença não puder ser identificada (UNKNOWN) ou não estiver na lista.
+        run: |
+          pip-licenses --format=json > "$RUNNER_TEMP/licencas.json"
+          python3 - <<'EOF'
+          import json
+          import os
+          import re
+          import sys
+
+          PERMITIDAS = re.compile(
+              r"\b(MIT|BSD|Apache|PSF|Python Software Foundation|ISC|MPL|Mozilla Public License)\b",
+              re.IGNORECASE,
+          )
+          PROIBIDAS = re.compile(r"GPL|GNU", re.IGNORECASE)
+
+          caminho = os.path.join(os.environ["RUNNER_TEMP"], "licencas.json")
+          with open(caminho, encoding="utf-8") as arquivo:
+              pacotes = json.load(arquivo)
+
+          problemas = []
+          for pacote in pacotes:
+              nome = pacote["Name"]
+              licenca = pacote["License"]
+              if PROIBIDAS.search(licenca) or not PERMITIDAS.search(licenca):
+                  problemas.append(f"{nome}: {licenca}")
+
+          if problemas:
+              print("Licenças fora da lista permitida:")
+              for linha in problemas:
+                  print(f"  - {linha}")
+              sys.exit(1)
+          print(f"{len(pacotes)} pacotes verificados, todos com licença permitida.")
+          EOF
+
+      - name: Varredura de segredos (gitleaks)
+        env:
+          GITLEAKS_VERSION: "8.18.4"
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          arquivo="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          pasta="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$pasta"
+          curl -sSfL -o "$pasta/$arquivo" "$base/$arquivo"
+          curl -sSfL -o "$pasta/checksums.txt" "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          (cd "$pasta" && grep " ${arquivo}\$" checksums.txt | sha256sum -c -)
+          tar -xzf "$pasta/$arquivo" -C "$pasta" gitleaks
+          "$pasta/gitleaks" detect --source . --config .gitleaks.toml --redact

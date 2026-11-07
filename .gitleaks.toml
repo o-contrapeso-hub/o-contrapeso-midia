@@ -1,0 +1,6 @@
+# Configuração do gitleaks para o O Publicador.
+# Usa as regras padrão do gitleaks sem allowlist: nenhum caminho ou valor é ignorado.
+title = "gitleaks - O Publicador"
+
+[extend]
+useDefault = true

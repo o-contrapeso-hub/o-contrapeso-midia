@@ -15,6 +15,12 @@ Variáveis (somente NOMES; os valores vêm do GitHub Actions: secret ou variáve
 * ``PUBLICAR_REAL`` (variável do repositório): só o valor exato ``1`` liga o modo real.
   Qualquer outro valor, ou ausente, é SIMULAÇÃO (padrão seguro). Ver ``modo_real_ligado``.
 
+Ainda NÃO lidas (ligação na T049, ver ``docs/instagram-estagio.md``):
+``PUBLICADOR_ESTAGIO_REPO`` (variável, ``dono/repo`` do repositório público de estágio) e
+``PUBLICADOR_ESTAGIO_TOKEN`` (SECRET, escrita só nesse repositório; A-004). Quando ligadas,
+o ``EstagioGitHub`` vai ao ``AdaptadorInstagram`` (``estagio=``) e ao ``executar``
+(``estagio=``, limpeza A-005 no início de cada rodada).
+
 Só o adaptador falso existe, e só em SIMULAÇÃO (as plataformas reais entram a partir da T043).
 Em modo real nenhum adaptador é registrado: toda plataforma é recusada pelo orquestrador.
 Este módulo não decide nada sobre autorização: a guarda continua sendo o único caminho (I-2).

@@ -438,7 +438,7 @@ def test_formato_e_case_insensitive(raiz: Path) -> None:
 # --------------------------------------------------------------------------- publicar / consultar
 
 
-def test_publicar_nao_implementado_sem_rede_e_nunca_sucesso(
+def test_publicar_imagem_sem_estagio_sem_rede_e_nunca_sucesso(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def proibido(*a: Any, **k: Any) -> NoReturn:
@@ -454,7 +454,7 @@ def test_publicar_nao_implementado_sem_rede_e_nunca_sucesso(
         resultado = adaptador.publicar(pedido)
         assert not resultado.sucesso
         assert resultado.tipo is TipoDeResultado.FALHA_PERMANENTE
-        assert resultado.motivo == "nao_implementado"
+        assert resultado.motivo == "estagio_nao_configurado"  # T044: imagem exige estágio
         assert resultado.id_externo is None
     assert transporte.chamadas == []
 

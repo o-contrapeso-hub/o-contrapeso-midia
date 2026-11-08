@@ -182,7 +182,8 @@ def test_story_em_video_usa_media_type_stories(raiz: Path) -> None:
     assert parse_qs((transporte.chamadas[2].corpo or b"").decode())["media_type"] == ["STORIES"]
 
 
-def test_imagem_e_carrossel_seguem_nao_implementados_sem_rede(raiz: Path) -> None:
+def test_imagem_e_carrossel_sem_estagio_nao_tocam_a_rede(raiz: Path) -> None:
+    """T044 implementou imagem/carrossel; sem estágio configurado continuam sem rede."""
     transporte = TransporteGravado()
     adaptador = _adaptador(transporte, raiz)
     casos = [
@@ -194,7 +195,7 @@ def test_imagem_e_carrossel_seguem_nao_implementados_sem_rede(raiz: Path) -> Non
         for simular in (True, False):
             r = adaptador.publicar(_pedido(simular, post, artes))
             assert r.tipo is TipoDeResultado.FALHA_PERMANENTE
-            assert r.motivo == "nao_implementado"
+            assert r.motivo == "estagio_nao_configurado"
     assert transporte.chamadas == []
 
 

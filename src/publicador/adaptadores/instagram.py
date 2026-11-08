@@ -1,11 +1,29 @@
-"""Adaptador Instagram: conexão, mídia, limite diário (T043) e vídeo/Reels por upload
-resumable (T045).
+"""Adaptador Instagram: conexão, mídia, limite diário (T043), vídeo/Reels por upload
+resumable (T045) e imagem/carrossel via cópia pública temporária (T044).
 
-``publicar`` publica SOMENTE vídeo (Reels, ou Story em vídeo) por upload resumable, sem URL
-pública; imagens e carrossel seguem devolvendo ``FALHA_PERMANENTE``/``nao_implementado``
-sem tocar a rede (T044). ``consultar`` devolve ``DESCONHECIDO`` (a T047 implementa de
-verdade). O adaptador não é registrado no ``__main__`` (modo real segue sem adaptadores
-até a T049).
+``publicar`` publica vídeo (Reels, ou Story em vídeo) por upload resumable, sem URL pública,
+e imagem única (feed ou Story em imagem) e carrossel (2 a 10 imagens) pela URL de uma cópia
+TEMPORÁRIA no repositório público de estágio (D1; ``publicador.artes.estagio``).
+``consultar`` devolve ``DESCONHECIDO`` (a T047 implementa de verdade). O adaptador não é
+registrado no ``__main__`` (modo real segue sem adaptadores até a T049).
+
+Fluxo real da imagem/carrossel (T044):
+
+1. sem estágio configurado: ``FALHA_PERMANENTE``/``estagio_nao_configurado``, nada enviado
+   (também em simulação, que aplica as mesmas regras);
+2. validações locais, ``verificar_conexao()`` ATIVA e limite diário > 0 ANTES de copiar;
+3. copia cada imagem para o estágio (nome = hash da chave + índice; nunca título/caminho);
+4. imagem única: ``POST /{conta}/media`` com ``image_url`` (Story: ``media_type=STORIES``);
+   carrossel: um container filho por imagem (``is_carousel_item=true``) e o container
+   ``CAROUSEL`` com ``children``; legenda só no container publicado;
+5. ``GET /{container}?fields=status_code`` até ``FINISHED``; ``media_publish``;
+6. em ``finally``: TODA cópia criada é apagada (sucesso, falha, INCERTO, exceção interna,
+   cancelamento). Falha ao apagar só gera log com código fixo (``copia_nao_apagada``) e não
+   muda o resultado; a limpeza A-005 do início da próxima execução apaga a sobra.
+
+Imagens não reaproveitam container entre chamadas (a cópia já foi apagada): uma nova
+tentativa antes do ``media_publish`` recomeça com cópias novas; depois do envio do
+``media_publish``, nunca reenvia (INCERTO), igual ao vídeo.
 
 Fluxo real do vídeo (cada etapa só começa se a anterior deu certo):
 
@@ -92,6 +110,7 @@ from publicador.artes.armazem import (
     TransporteHttpEscrita,
     validar_caminho_de_arte,
 )
+from publicador.artes.estagio import CopiaPublica, ErroEstagio, EstagioPublico
 from publicador.core.modelos import ConexaoEstado, Post
 from publicador.core.redacao import SegredoStr, obter_logger
 
@@ -249,7 +268,7 @@ def _dimensoes_jpeg(dados: bytes) -> tuple[int, int] | None:
 
 
 class AdaptadorInstagram:
-    """Implementa ``PlatformAdapter`` para o Instagram (parte 1, sem publicação)."""
+    """Implementa ``PlatformAdapter`` para o Instagram (vídeo, imagem e carrossel)."""
 
     def __init__(
         self,
@@ -267,7 +286,12 @@ class AdaptadorInstagram:
         max_tentativas_status: int = _MAX_TENTATIVAS_STATUS,
         dormir: Callable[[float], None] = time.sleep,
         hosts_upload: frozenset[str] = _HOSTS_UPLOAD,
+        estagio: EstagioPublico | None = None,
     ) -> None:
+        if estagio is not None and not all(
+            callable(getattr(estagio, nome, None)) for nome in ("publicar_copia", "apagar_copia")
+        ):
+            raise TypeError("estagio deve implementar EstagioPublico.")
         if not isinstance(token, SegredoStr):
             raise TypeError("O token deve ser um SegredoStr (regra I-1).")
         if _RE_ID_CONTA.fullmatch(id_conta) is None:
@@ -292,6 +316,7 @@ class AdaptadorInstagram:
         self._max_tentativas_status = max_tentativas_status
         self._dormir = dormir
         self._hosts_upload = hosts_upload
+        self._estagio = estagio
         self._andamentos: dict[str, _Andamento] = {}
 
     def __repr__(self) -> str:
@@ -448,28 +473,31 @@ class AdaptadorInstagram:
     # ------------------------------------------------------------------ publicar / consultar
 
     def publicar(self, pedido: PedidoDePublicacao) -> ResultadoPublicacao:
-        """Vídeo (Reels/Story em vídeo) por upload resumable; o resto é da T044 (I-2: quem
-        decide se pode publicar é a guarda do orquestrador, nunca este método)."""
+        """Vídeo por upload resumable (T045); imagem e carrossel via estágio público (T044).
+
+        I-2: quem decide se pode publicar é a guarda do orquestrador, nunca este método.
+        """
         chave = pedido.chave_idempotencia
-        tipo_midia = self._tipo_de_video(pedido)
-        if tipo_midia is None:
+        tipo_video = self._tipo_de_video(pedido)
+        tipo_imagem = None if tipo_video is not None else self._tipo_de_imagem(pedido)
+        motivo: str | None = None
+        if tipo_video is None and tipo_imagem is None:
+            motivo = "formato_nao_suportado"
+        elif pedido.plataforma.strip().casefold() != PLATAFORMA:
+            motivo = "plataforma_incorreta"
+        elif tipo_imagem is not None and self._estagio is None:
+            motivo = "estagio_nao_configurado"
+        if motivo is not None:
             return ResultadoPublicacao(
-                TipoDeResultado.FALHA_PERMANENTE,
-                chave,
-                simulado=pedido.simular,
-                motivo="nao_implementado",
-            )
-        if pedido.plataforma.strip().casefold() != PLATAFORMA:
-            return ResultadoPublicacao(
-                TipoDeResultado.FALHA_PERMANENTE,
-                chave,
-                simulado=pedido.simular,
-                motivo="plataforma_incorreta",
+                TipoDeResultado.FALHA_PERMANENTE, chave, simulado=pedido.simular, motivo=motivo
             )
         if pedido.simular:
             return self._simular(pedido)
         try:
-            return self._publicar_video(pedido, tipo_midia)
+            if tipo_video is not None:
+                return self._publicar_video(pedido, tipo_video)
+            assert tipo_imagem is not None
+            return self._publicar_imagens(pedido, tipo_imagem)
         except _Encerrar as parada:
             return ResultadoPublicacao(parada.tipo, chave, motivo=parada.motivo)
         except Exception as erro:  # noqa: BLE001 - defeito interno: nunca vaza detalhe
@@ -494,6 +522,18 @@ class AdaptadorInstagram:
         if formato == "stories" and len(pedido.artes) == 1:
             if PurePosixPath(pedido.artes[0]).suffix.casefold() in _EXT_VIDEO:
                 return "STORIES"
+        return None
+
+    @staticmethod
+    def _tipo_de_imagem(pedido: PedidoDePublicacao) -> str | None:
+        """``IMAGE``, ``STORIES`` (imagem) ou ``CAROUSEL``; ``None`` = formato desconhecido.
+
+        Extensão/conteúdo das artes ficam para ``validar_midia`` (falha antes de enviar)."""
+        formato = (pedido.post.formato or "").strip().casefold()
+        if formato in ("feed", "carrossel"):
+            return "CAROUSEL" if len(pedido.artes) >= 2 else "IMAGE"
+        if formato == "stories":
+            return "STORIES"
         return None
 
     def _problema_local(self, pedido: PedidoDePublicacao) -> tuple[TipoDeResultado, str] | None:
@@ -558,7 +598,7 @@ class AdaptadorInstagram:
             raise _Encerrar(TipoDeResultado.FALHA_PERMANENTE, f"{operacao}_fora_do_contrato")
         return dados
 
-    def _ler_video(self, arte: str) -> bytes:
+    def _ler_arte(self, arte: str) -> bytes:
         try:
             dados = self._armazem.ler(arte)
         except ArteNaoEncontrada:
@@ -591,7 +631,7 @@ class AdaptadorInstagram:
 
         andamento = self._andamentos.setdefault(chave, _Andamento())
         try:
-            dados = b"" if andamento.enviado else self._ler_video(pedido.artes[0])
+            dados = b"" if andamento.enviado else self._ler_arte(pedido.artes[0])
             if andamento.container is None:
                 self._criar_container(transporte, andamento, pedido, tipo_midia)
             if not andamento.enviado:
@@ -602,6 +642,103 @@ class AdaptadorInstagram:
                 self._andamentos.pop(chave, None)  # container inútil: recomeçar do zero
             raise
         return self._publicar_container(transporte, andamento, chave)
+
+    # ------------------------------------------------------------------ imagem/carrossel (T044)
+
+    def _publicar_imagens(self, pedido: PedidoDePublicacao, tipo: str) -> ResultadoPublicacao:
+        chave = pedido.chave_idempotencia
+        anterior = self._andamentos.get(chave)
+        if anterior is not None:
+            if anterior.resultado is not None:  # já publicado: mesmo sucesso, sem rede
+                return anterior.resultado
+            if anterior.publish_enviado:  # pode ter saído: NUNCA reenviar
+                raise _Encerrar(TipoDeResultado.INCERTO, "publish_ja_enviado")
+        problema = self._problema_local(pedido)
+        if problema is not None:
+            raise _Encerrar(*problema)
+        transporte = self._escrita()
+        estagio = self._estagio
+        if estagio is None:  # já verificado em ``publicar``; defesa extra
+            raise _Encerrar(TipoDeResultado.FALHA_PERMANENTE, "estagio_nao_configurado")
+        if not self.verificar_conexao().valida:
+            raise _Encerrar(TipoDeResultado.FALHA_PERMANENTE, "conexao_invalida")
+        restante = self.limite_diario_restante()
+        if restante is None or restante <= 0:
+            raise _Encerrar(TipoDeResultado.FALHA_TRANSITORIA, "limite_diario")
+
+        # Sem reaproveitar container: a cópia da tentativa anterior já foi apagada.
+        andamento = _Andamento()
+        self._andamentos[chave] = andamento
+        base = hashlib.sha256(chave.encode("utf-8")).hexdigest()[:16]
+        copias: list[CopiaPublica] = []
+        try:
+            for indice, arte in enumerate(pedido.artes, start=1):
+                dados = self._ler_arte(arte)
+                copias.append(self._copiar(estagio, f"{base}-{indice}", dados))
+            if tipo == "CAROUSEL":
+                filhos = [
+                    self._criar_container_imagem(
+                        transporte, {"image_url": c.url, "is_carousel_item": "true"}
+                    )
+                    for c in copias
+                ]
+                campos = {"media_type": "CAROUSEL", "children": ",".join(filhos)}
+            else:
+                campos = {"image_url": copias[0].url}
+                if tipo == "STORIES":
+                    campos["media_type"] = "STORIES"
+            if pedido.conteudo.strip():
+                campos["caption"] = pedido.conteudo
+            andamento.container = self._criar_container_imagem(transporte, campos)
+            self._aguardar_container(transporte, andamento)
+            return self._publicar_container(transporte, andamento, chave)
+        finally:
+            self._apagar_copias(estagio, copias)
+
+    @staticmethod
+    def _copiar(estagio: EstagioPublico, nome: str, dados: bytes) -> CopiaPublica:
+        try:
+            return estagio.publicar_copia(nome, dados)
+        except ErroEstagio as erro:
+            tipo = (
+                TipoDeResultado.FALHA_TRANSITORIA
+                if erro.transitorio
+                else TipoDeResultado.FALHA_PERMANENTE
+            )
+            raise _Encerrar(tipo, f"estagio_{erro.codigo}") from None
+
+    @staticmethod
+    def _apagar_copias(estagio: EstagioPublico, copias: Sequence[CopiaPublica]) -> None:
+        """Melhor esforço: nunca muda o resultado nem vaza detalhe (A-005 limpa a sobra)."""
+        for copia in copias:
+            try:
+                apagada = estagio.apagar_copia(copia)
+            except Exception as erro:  # noqa: BLE001 - não pode mudar o resultado
+                _log.warning("instagram estagio: erro ao apagar (%s)", type(erro).__name__)
+                apagada = False
+            if not apagada:
+                _log.warning(
+                    "instagram estagio: copia_nao_apagada; a limpeza da proxima execucao apaga"
+                )
+
+    def _criar_container_imagem(
+        self, transporte: TransporteHttpEscrita, campos: dict[str, str]
+    ) -> str:
+        corpo = urlencode(campos).encode("utf-8")
+        url = f"{self._base}/{self._id_conta}/media"
+        cabecalhos = self._cabecalhos_graph(formulario=True)
+        try:
+            dados = self._etapa(
+                "container", lambda: transporte.postar(url, cabecalhos, corpo, self._timeout)
+            )
+        finally:
+            cabecalhos.clear()
+        identificador = dados.get("id")
+        if not (isinstance(identificador, str) and _RE_ID_GRAPH.fullmatch(identificador)):
+            raise _Encerrar(TipoDeResultado.FALHA_PERMANENTE, "container_fora_do_contrato")
+        return identificador
+
+    # ------------------------------------------------------------------ vídeo: container
 
     def _criar_container(
         self,

@@ -1065,3 +1065,95 @@ def test_sem_mapeamento_na_configuracao_tudo_e_recusado(armazem: ArmazemLocal) -
     adaptadores = _adaptadores(notion, "Instagram")
     rel = _executar(notion, armazem, adaptadores, tipos_por_formato=None)
     assert rel.ocorrencia(P1, "Instagram").motivo == "formato_sem_tipo"
+
+
+# ------------------------------------------------------------- limpeza do estágio (T044, A-005)
+
+
+class EstagioEspiao:
+    """Estágio falso: anota a limpeza no log de eventos; publicar/apagar são proibidos aqui."""
+
+    def __init__(self, eventos: list[tuple[str, ...]], erro: BaseException | None = None) -> None:
+        self.eventos = eventos
+        self.erro = erro
+        self.instantes: list[datetime] = []
+
+    def publicar_copia(self, nome_unico: str, dados: bytes) -> Any:
+        raise AssertionError("o orquestrador não copia nada")
+
+    def apagar_copia(self, copia: Any) -> bool:
+        raise AssertionError("o orquestrador não apaga cópia avulsa")
+
+    def limpar_antigas(self, agora: datetime, idade_max: timedelta = timedelta(minutes=15)) -> Any:
+        from publicador.artes.estagio import ResultadoLimpeza
+
+        self.instantes.append(agora)
+        self.eventos.append(("limpeza_estagio",))
+        if self.erro is not None:
+            raise self.erro
+        return ResultadoLimpeza(apagadas=3, falhas=0, listagem_ok=True)
+
+
+def test_limpeza_do_estagio_roda_no_inicio_de_cada_execucao(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    estagio = EstagioEspiao(notion.eventos)
+    adaptadores = _adaptadores(notion, "Instagram", armazem=armazem)
+
+    _executar(notion, armazem, adaptadores, estagio=estagio)
+    _executar(notion, armazem, adaptadores, estagio=estagio)
+
+    assert estagio.instantes == [AGORA, AGORA]
+    assert notion.eventos[0] == ("limpeza_estagio",)  # antes de qualquer leitura/publicação
+    assert notion.eventos.count(("limpeza_estagio",)) == 2
+
+
+def test_limpeza_do_estagio_roda_mesmo_com_configuracao_invalida(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    estagio = EstagioEspiao(notion.eventos)
+    ids_sem_posts = IdsBancos(**{**IDS.__dict__, "posts": ""})
+    executar(
+        _cliente(notion), ids_sem_posts, _config(), armazem, {}, PARAMETROS, lambda: AGORA,
+        publicar_real=False,
+    )  # fmt: skip
+    assert estagio.instantes == []  # sem estágio passado: nada
+    rel = executar(
+        _cliente(notion), ids_sem_posts, _config(), armazem, {}, PARAMETROS, lambda: AGORA,
+        publicar_real=False, estagio=estagio,
+    )  # fmt: skip
+    assert rel.falha is not None
+    assert estagio.instantes == [AGORA]
+
+
+def test_falha_na_limpeza_nao_derruba_a_rodada(
+    armazem: ArmazemLocal, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    notion = _cenario(armazem, (P1, _props()))
+    estagio = EstagioEspiao(notion.eventos, RuntimeError("quebrou " + TOKEN_REDE))
+    adaptadores = _adaptadores(notion, "Instagram", armazem=armazem)
+    rel = _executar(notion, armazem, adaptadores, estagio=estagio)
+    assert rel.ocorrencia(P1, "Instagram").desfecho is Desfecho.SIMULADO
+    assert TOKEN_REDE not in caplog.text
+
+
+def test_cancelamento_durante_a_limpeza_propaga(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    estagio = EstagioEspiao(notion.eventos, KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _executar(notion, armazem, {}, estagio=estagio)
+
+
+def test_sem_estagio_nada_muda(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    adaptadores = _adaptadores(notion, "Instagram", armazem=armazem)
+    rel = _executar(notion, armazem, adaptadores)
+    assert rel.ocorrencia(P1, "Instagram").desfecho is Desfecho.SIMULADO
+    assert ("limpeza_estagio",) not in notion.eventos
+
+
+def test_limpeza_nao_roda_com_relogio_sem_fuso(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    estagio = EstagioEspiao(notion.eventos)
+    rel = _executar(notion, armazem, {}, estagio=estagio, agora=datetime(2026, 11, 7, 12, 10))
+    assert rel.falha is FalhaGeral.AGORA_SEM_FUSO
+    assert estagio.instantes == []

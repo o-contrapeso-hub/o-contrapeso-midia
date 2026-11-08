@@ -71,6 +71,10 @@ Decisões (mais restritivas que a guarda, nunca menos; I-2):
   prioridade, inclusive vazio. Sem mapeamento = tudo recusado (``FORMATO_SEM_TIPO``).
 * Recusas usam tentativa 1 e, sem selo, a chave ``chave_de(post, plataforma, "sem-selo")``.
 
+Limpeza do estágio (T044, A-005): se ``executar`` recebe ``estagio``, a rodada começa
+apagando as cópias públicas temporárias de imagens com mais de 15 minutos (sobras de uma
+execução cancelada), antes de qualquer leitura; falha ali só vai ao log (contagem/tipo).
+
 Pós-publicação (T039, ``job/pos_publicacao.py``): em modo real, depois de processar TODAS as
 plataformas de um post, ``concluir_post`` lê as execuções do post no Notion e move o estágio
 para ``publicado`` ou ``falha`` num PATCH único (nunca para ``autorizado``; recusa e
@@ -110,6 +114,7 @@ from publicador.adaptadores.base import (
     TipoDeResultado,
 )
 from publicador.artes.armazem import ArmazemDeArtes
+from publicador.artes.estagio import EstagioPublico, limpar_copias_antigas
 from publicador.core.config import Parametros
 from publicador.core.confirmacao import ConfirmacaoRecusada, exigir_estagio_autorizador
 from publicador.core.guarda import ContextoGuarda, PublicacaoConhecida, avaliar
@@ -1100,6 +1105,7 @@ def executar(
     publicar_real: bool,
     tipos_por_formato: Mapping[str, Mapping[str, str]] | None = None,
     pagina_sinal_de_vida: str | None = None,
+    estagio: EstagioPublico | None = None,
 ) -> RelatorioExecucao:
     """Uma rodada do publicador. Veja o docstring do módulo para o fluxo e as decisões.
 
@@ -1108,9 +1114,14 @@ def executar(
     ``agora``: relógio injetado, com fuso. ``tipos_por_formato``: formato -> plataforma ->
     tipo (A-023); ausente = vazio = tudo recusado. ``pagina_sinal_de_vida``: página do sinal a
     atualizar (sem ela, cria uma). Nunca levanta por causa de um post.
+    ``estagio`` (T044, A-005): repositório público de estágio das imagens do Instagram; se
+    passado, a rodada COMEÇA apagando cópias temporárias com mais de 15 minutos (órfãs de
+    execuções canceladas), registrando só a contagem. Ausente: nada muda.
     """
     modo_real = publicar_real is True
     instante = agora()
+    if estagio is not None and _tem_fuso(instante):
+        limpar_copias_antigas(estagio, instante)  # nunca levanta Exception; só contagens
     if config.problemas_tipos:  # só a contagem: o texto do mapeamento nunca vai ao log
         _log.warning(
             "orquestrador: %d problema(s) no mapeamento de tipos por formato; os formatos "

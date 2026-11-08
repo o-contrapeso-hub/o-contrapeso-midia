@@ -49,4 +49,4 @@ Esta validação **ainda não foi feita**. O código e os testes automatizados (
 
 ## Escrita no GitHub (T044, A-004)
 
-Se a T044 exigir escrita, o token específico entra só no passo que precisar. Não implementado aqui; há um comentário no workflow.
+A T044 exige escrita num repositório **público de estágio**, separado, para a cópia temporária das imagens do Instagram. Nomes: secret `PUBLICADOR_ESTAGIO_TOKEN` (escrita só nesse repositório) e variável `PUBLICADOR_ESTAGIO_REPO` (`dono/repo`). O token entra só no `env` do passo que roda o publicador. A ligação no ponto de entrada ainda não existe (T049). Detalhes, roteiro de validação e limpeza: `docs/instagram-estagio.md`.

@@ -1,0 +1,77 @@
+# Agendador do O Publicador (T041, RF-21): roda uma rodada de publicação a cada 5 minutos.
+#
+# Decisões (cada uma tem teste em tests/test_workflow_publicador.py):
+# - Cron em minutos NÃO redondos (3, 8, 13, ... 58): o GitHub atrasa ou descarta execuções
+#   agendadas nos minutos de pico (:00, :05, :10...). Mesmo assim o agendamento é "melhor
+#   esforço": pode atrasar alguns minutos; a janela de tolerância cobre isso.
+# - Execução manual (workflow_dispatch) SEM inputs: o botão "Run workflow" roda com os mesmos
+#   valores do agendamento. Ninguém liga o modo real por um campo do formulário.
+# - Simulação é o PADRÃO. O modo real só liga se a VARIÁVEL do repositório PUBLICAR_REAL
+#   (Settings -> Secrets and variables -> Actions -> Variables) valer exatamente "1".
+#   Variável ausente, vazia ou com outro valor = simulação. Não é secret.
+# - Um único grupo de concurrency, sem cancelar a execução em andamento: duas rodadas nunca
+#   se sobrepõem e uma rodada no meio de uma publicação não é interrompida.
+# - permissions: contents: read. O GITHUB_TOKEN não escreve em nada.
+# - Segredos aparecem SÓ pelo nome (${{ secrets.NOME }}), SÓ no bloco env do passo que roda o
+#   publicador, nunca em `run:`. Proibido aqui: eco de segredo, eco de comandos (modo xtrace),
+#   listar o ambiente, upload de artefatos e o modo de depuração de passos do Actions.
+# - T044 (A-004): se a pós-publicação exigir ESCRITA (ex.: gravar algo no GitHub), o token
+#   específico de escrita entra SOMENTE no passo que precisar dele, nunca no job inteiro.
+#   Não implementado nesta tarefa.
+# - Agendador desativado por inatividade (60 dias sem atividade no repositório): veja
+#   docs/agendador.md ("Reativar o agendador").
+#
+# As actions estão fixadas por tag de versão maior; fixar pelo SHA completo é pendência
+# registrada em ci.yml.
+name: Publicador
+
+on:
+  schedule:
+    - cron: "3-58/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publicador-agendador
+  cancel-in-progress: false
+
+jobs:
+  rodada:
+    name: Rodada de publicação
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Instalar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar o projeto
+        run: python -m pip install .
+
+      - name: Rodar o publicador
+        env:
+          # Secrets: apenas os nomes.
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PUBLICADOR_ARTES_TOKEN: ${{ secrets.PUBLICADOR_ARTES_TOKEN }}
+          # Variáveis do repositório (não secretas).
+          PUBLICAR_REAL: ${{ vars.PUBLICAR_REAL }}
+          PUBLICADOR_DB_ESTAGIOS: ${{ vars.PUBLICADOR_DB_ESTAGIOS }}
+          PUBLICADOR_DB_FORMATOS: ${{ vars.PUBLICADOR_DB_FORMATOS }}
+          PUBLICADOR_DB_SERIES: ${{ vars.PUBLICADOR_DB_SERIES }}
+          PUBLICADOR_DB_TEMAS: ${{ vars.PUBLICADOR_DB_TEMAS }}
+          PUBLICADOR_DB_POSTS: ${{ vars.PUBLICADOR_DB_POSTS }}
+          PUBLICADOR_DB_EXECUCOES: ${{ vars.PUBLICADOR_DB_EXECUCOES }}
+          PUBLICADOR_ARTES_REPO: ${{ vars.PUBLICADOR_ARTES_REPO }}
+          PUBLICADOR_ARTES_REF: ${{ vars.PUBLICADOR_ARTES_REF }}
+        run: python -m publicador.job

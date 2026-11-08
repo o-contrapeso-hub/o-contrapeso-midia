@@ -37,7 +37,7 @@ from publicador.core.modelos import ConexaoEstado, Estagio, PapelEstagio, Post
 from publicador.core.redacao import SegredoStr, limpar_segredos_registrados
 
 FIXTURES = Path(__file__).parent / "fixtures" / "instagram"
-TOKEN_FICTICIO = "IGQ_tok_ficticio_ZXCV1234abcd"
+TOKEN_FICTICIO = "tok_ficticio_ZXCV1234abcd"
 ID_CONTA = "17841400000000001"
 EXPIRA_EM = datetime.fromtimestamp(1767744000, UTC)
 AGORA = EXPIRA_EM - timedelta(days=10, hours=3)

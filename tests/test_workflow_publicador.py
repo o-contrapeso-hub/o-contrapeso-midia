@@ -155,7 +155,7 @@ BASE = {
     "PUBLICADOR_DB_EXECUCOES": "f" * 32,
     "PUBLICADOR_ARTES_REPO": "dono/repo",
     "PUBLICADOR_ARTES_REF": "main",
-    "PUBLICADOR_ARTES_TOKEN": "ghp_FALSO_leitura_0123456789abcdef",
+    "PUBLICADOR_ARTES_TOKEN": "FALSO_artes_leitura_0123456789abcdef",
 }
 
 

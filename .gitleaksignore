@@ -1,0 +1,4 @@
+# Falsos positivos já no histórico (tokens SINTÉTICOS de teste, nunca credenciais reais).
+# Impressões digitais exatas (commit:arquivo:regra:linha); os valores foram trocados depois.
+37af4a3a911b75e80d1b48980a38d510b8dafc21:tests/test_workflow_publicador.py:generic-api-key:158
+2c48da02734ec8f5a3e5dc210f25374e34e40280:tests/test_adaptador_instagram.py:generic-api-key:40

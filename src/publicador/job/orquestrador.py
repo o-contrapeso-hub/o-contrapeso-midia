@@ -40,9 +40,23 @@ resultado é registrado como "simulado" e nada muda no estágio do post.
 
 Decisões (mais restritivas que a guarda, nunca menos; I-2):
 
-* **Falha anterior** (``FALHA``) do mesmo post e plataforma: não publica nesta tarefa
-  (``AGUARDANDO_NOVA_TENTATIVA``). A nova tentativa segura (consultar a plataforma, intervalo
-  de 30 min, no máximo uma) é da T040; a guarda não bloqueia ``FALHA`` de propósito.
+* **Nova tentativa segura (T040, RF-25, RF-30, RF-38)**: regra pura em ``job/nova_tentativa.py``
+  (``planejar``), aplicada SÓ depois de a guarda permitir (a nova tentativa passa por TODA a
+  guarda de novo: estágio, selo, janela, execução existente; nada aqui escreve ``autorizado``).
+  Falha transitória na tentativa 1 da confirmação atual: antes de ``nova_tentativa_minutos``
+  depois do fim dela, ``AGUARDANDO_NOVA_TENTATIVA`` (nada é escrito); depois, e se ainda couber
+  na janela, grava ``iniciada`` com tentativa 2, CONSULTA a plataforma (``consultar(chave)``) e
+  só reenvia com ``NAO_ENCONTRADO``. ``ENCONTRADO``: registra sucesso (código
+  ``plataforma_confirmou_envio`` e id externo se no padrão) sem reenviar. ``DESCONHECIDO``,
+  erro ou resposta fora do contrato: ``incerto`` sem reenviar. Falha permanente, tentativa 2
+  já registrada ou nova tentativa fora da janela: ``SEM_NOVA_TENTATIVA`` (nada é escrito; a
+  pós-publicação leva o post a ``falha``, RF-30). Em simulação não há consulta (RF-17: só a
+  execução manual verifica direto nas plataformas) e a tentativa 2 é só simulada.
+* **Concorrência (RF-12)**: depois de gravar ``iniciada`` e ANTES de consultar ou enviar, relê
+  as execuções do post na plataforma (todas as datas). Só segue se a própria ``iniciada`` está
+  lá e nenhuma OUTRA execução bloqueante (sucesso, incerto, iniciada) existe; senão registra
+  ``não executado`` (``execucao_concorrente``) e não envia (``EXECUCAO_CONCORRENTE``). Duas
+  rodadas que se cruzam podem abortar as duas (lado seguro); a seguinte publica uma vez.
 * **Simulação repetida**: em simulação, se já existe execução ``simulado`` com a MESMA chave,
   não simula nem registra de novo (evita um registro a cada 5 minutos durante a janela).
 * **Recusa repetida**: se já existe recusa com a mesma chave e o mesmo código, não registra
@@ -62,7 +76,9 @@ plataformas de um post, ``concluir_post`` lê as execuções do post no Notion e
 para ``publicado`` ou ``falha`` num PATCH único (nunca para ``autorizado``; recusa e
 simulação não mudam o estágio). Erro ali não derruba a rodada nem desfaz execuções; o
 desfecho vai em ``Ocorrencia.pos_publicacao`` e ``RelatorioExecucao.pos_publicacao``.
-Gancho T040 (nova tentativa) entra no ponto ``AGUARDANDO_NOVA_TENTATIVA``.
+A pós-publicação recebe o relógio e os parâmetros para aplicar a MESMA regra da nova
+tentativa (``planejar``): transitória que ainda pode ser repetida mantém ``autorizado``;
+sem nova tentativa possível (janela, permanente, tentativa 2), ``falha``.
 
 I-1: logs, registros, exceções e relatório têm só ids, plataforma, desfecho e códigos; nunca
 título, corpo, artes, selo, token, mensagem de exceção ou resposta bruta. Exceções inesperadas
@@ -86,8 +102,10 @@ from enum import Enum
 from typing import Any, Final
 
 from publicador.adaptadores.base import (
+    EstadoConsulta,
     PedidoDePublicacao,
     PlatformAdapter,
+    ResultadoConsulta,
     ResultadoPublicacao,
     TipoDeResultado,
 )
@@ -120,6 +138,7 @@ from publicador.job.execucoes import (
     registrar_resultado,
     sinal_de_vida,
 )
+from publicador.job.nova_tentativa import ESTADOS_BLOQUEANTES, Passo, planejar
 from publicador.job.pos_publicacao import DesfechoPos, ResultadoPos, concluir_post
 from publicador.notion.bancos import Configuracao, IdsBancos
 from publicador.notion.cliente import ClienteNotion
@@ -191,6 +210,8 @@ class Desfecho(Enum):
     DEVOLVIDO_A_PRONTO = "devolvido_a_pronto"
     INDETERMINADO = "indeterminado"
     AGUARDANDO_NOVA_TENTATIVA = "aguardando_nova_tentativa"
+    SEM_NOVA_TENTATIVA = "sem_nova_tentativa"  # T040: falha desta confirmação sem nova tentativa
+    EXECUCAO_CONCORRENTE = "execucao_concorrente"  # T040: outra execução do mesmo post/plataforma
     NAO_INICIADO = "nao_iniciado"
     ERRO = "erro"
 
@@ -230,6 +251,8 @@ class Ocorrencia:
     # Desfecho da pós-publicação do POST (T039), repetido em cada plataforma dele; ``None`` em
     # simulação ou quando o post não chegou a ser concluído nesta rodada.
     pos_publicacao: DesfechoPos | None = None
+    # Tentativa (1 ou 2) da execução registrada nesta rodada; ``None`` sem envio (T040).
+    tentativa: int | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +298,10 @@ def _utc(valor: datetime) -> datetime:
 
 def _nome_erro(erro: BaseException) -> str:
     return type(erro).__name__
+
+
+def _normalizado(valor: str) -> str:
+    return valor.replace("-", "").lower()
 
 
 def _id_seguro(pagina: Mapping[str, Any]) -> str | None:
@@ -724,17 +751,35 @@ class _Rodada:
         anteriores: Sequence[Execucao],
         andamento: _Andamento,
     ) -> Ocorrencia:
+        """Só chamado depois de a guarda PERMITIR. Decide tentativa 1, espera, nova tentativa
+        (consultando a plataforma antes) ou nenhuma, e nunca envia sem ``iniciada`` exclusiva."""
         assert post.selo is not None  # garantido pela guarda (SELO_AUSENTE)
         chave = chave_de(post.id, plataforma, post.selo)
         andamento.chave = chave
-        if any(e.estado is EstadoExecucao.FALHA for e in anteriores):
-            # Gancho T040: a nova tentativa segura (consultar, 30 min, uma vez) entra aqui.
+        plano = planejar(
+            anteriores,
+            confirmado_em=post.confirmado_em,
+            publicar_em=post.publicar_em,
+            agora=self._agora(),
+            parametros=self._parametros,
+        )
+        if plano.passo is Passo.AGUARDAR:
             _log.info(
-                "orquestrador: post %s plataforma %s com falha anterior; aguarda nova tentativa",
+                "orquestrador: post %s plataforma %s aguarda a nova tentativa",
                 post.id,
                 plataforma,
             )
             return Ocorrencia(post.id, plataforma, Desfecho.AGUARDANDO_NOVA_TENTATIVA)
+        if plano.passo is Passo.ENCERRADA or plano.tentativa is None:
+            motivo = plano.motivo.value if plano.motivo is not None else None
+            _log.info(
+                "orquestrador: post %s plataforma %s sem nova tentativa; motivo: %s",
+                post.id,
+                plataforma,
+                motivo,
+            )
+            return Ocorrencia(post.id, plataforma, Desfecho.SEM_NOVA_TENTATIVA, motivo)
+        tentativa = plano.tentativa
         if not self._real and any(
             e.estado is EstadoExecucao.SIMULADA and e.chave_idempotencia == chave
             for e in anteriores
@@ -745,7 +790,7 @@ class _Rodada:
         artes = artes_por_plataforma(post)[plataforma]
         try:
             registro = iniciar_execucao(
-                self._cliente, self._ids, post.id, plataforma, chave, _TENTATIVA, self._agora()
+                self._cliente, self._ids, post.id, plataforma, chave, tentativa, self._agora()
             )
         except Exception as erro:  # noqa: BLE001 - sem "iniciada" confirmada, NÃO publica
             _log.error(
@@ -762,6 +807,20 @@ class _Rodada:
                 Registro.FALHOU,
             )
         andamento.iniciada = registro
+
+        if not self._exclusiva(registro, post, plano.passo):
+            return self._concluir(
+                registro,
+                Desfecho.EXECUCAO_CONCORRENTE,
+                EstadoExecucao.NAO_EXECUTADO,
+                CodigoMotivo.EXECUCAO_CONCORRENTE,
+                None,
+                None,
+            )
+        if plano.passo is Passo.NOVA_TENTATIVA and self._real:
+            ja_saiu = self._consultar_antes(adaptador, registro, chave)
+            if ja_saiu is not None:
+                return ja_saiu
 
         pedido = PedidoDePublicacao(post, plataforma, artes, chave, simular=not self._real)
         try:
@@ -791,6 +850,112 @@ class _Rodada:
                 None,
             )
         return self._classificar(registro, resultado, chave)
+
+    def _exclusiva(self, registro: RegistroExecucao, post: Post, passo: Passo) -> bool:
+        """Releitura depois de ``iniciada`` (RF-12): a própria execução está lá, nenhuma OUTRA
+        do mesmo post e plataforma, de qualquer data, bloqueia, e o plano da nova tentativa
+        continua o mesmo (outra rodada pode ter registrado uma falha no meio: enviar agora
+        seria uma tentativa a mais, sem intervalo nem consulta). Erro de leitura = não."""
+        execucao = registro.execucao
+        try:
+            registros = execucoes_do_post(
+                self._cliente, self._ids, execucao.post_id, execucao.plataforma
+            )
+        except Exception as erro:  # noqa: BLE001 - sem prova de exclusividade, não envia
+            _log.warning(
+                "orquestrador: releitura das execuções falhou; post %s plataforma %s (%s)",
+                execucao.post_id,
+                execucao.plataforma,
+                _nome_erro(erro),
+            )
+            return False
+        propria = _normalizado(registro.pagina_id)
+        achou = False
+        alheias = [r.execucao for r in registros if _normalizado(r.pagina_id) != propria]
+        replano = planejar(
+            alheias,
+            confirmado_em=post.confirmado_em,
+            publicar_em=post.publicar_em,
+            agora=self._agora(),
+            parametros=self._parametros,
+        )
+        if replano.passo is not passo:
+            _log.warning(
+                "orquestrador: execuções mudaram durante a rodada; post %s plataforma %s não "
+                "enviado",
+                execucao.post_id,
+                execucao.plataforma,
+            )
+            return False
+        for outro in registros:
+            if _normalizado(outro.pagina_id) == propria:
+                achou = True
+                continue
+            if outro.execucao.estado in ESTADOS_BLOQUEANTES:
+                _log.warning(
+                    "orquestrador: execução concorrente; post %s plataforma %s não enviado",
+                    execucao.post_id,
+                    execucao.plataforma,
+                )
+                return False
+        if not achou:
+            _log.warning(
+                "orquestrador: 'iniciada' não encontrada na releitura; post %s plataforma %s "
+                "não enviado",
+                execucao.post_id,
+                execucao.plataforma,
+            )
+        return achou
+
+    def _consultar_antes(
+        self, adaptador: PlatformAdapter, registro: RegistroExecucao, chave: str
+    ) -> Ocorrencia | None:
+        """Nova tentativa segura (RF-25): pergunta à plataforma se a chave já saiu.
+
+        Devolve a ocorrência final quando NÃO deve reenviar (encontrado ou dúvida) e ``None``
+        só com ``NAO_ENCONTRADO`` explícito (pode reenviar)."""
+        try:
+            consulta = adaptador.consultar(chave)
+        except Exception as erro:  # noqa: BLE001 - consulta sem resposta = dúvida (incerto)
+            _log.error(
+                "orquestrador: consulta à plataforma falhou; post %s plataforma %s (%s)",
+                registro.execucao.post_id,
+                registro.execucao.plataforma,
+                _nome_erro(erro),
+            )
+            return self._concluir(
+                registro,
+                Desfecho.INCERTO,
+                EstadoExecucao.INCERTO,
+                CodigoMotivo.ERRO_DESCONHECIDO,
+                None,
+                None,
+            )
+        estado = consulta.estado if isinstance(consulta, ResultadoConsulta) else None
+        if estado is EstadoConsulta.NAO_ENCONTRADO:
+            return None
+        if estado is EstadoConsulta.ENCONTRADO:
+            assert isinstance(consulta, ResultadoConsulta)
+            id_externo = consulta.id_externo
+            if id_externo is not None and _RE_ID_EXTERNO.fullmatch(id_externo) is None:
+                _log.warning("orquestrador: id externo fora do padrão; não gravado")
+                id_externo = None
+            return self._concluir(
+                registro,
+                Desfecho.SUCESSO,
+                EstadoExecucao.SUCESSO,
+                CodigoMotivo.PLATAFORMA_CONFIRMOU_ENVIO,
+                id_externo,
+                None,
+            )
+        return self._concluir(
+            registro,
+            Desfecho.INCERTO,
+            EstadoExecucao.INCERTO,
+            CodigoMotivo.PLATAFORMA_NAO_CONFIRMOU,
+            None,
+            None,
+        )
 
     def _classificar(self, registro: RegistroExecucao, resultado: object, chave: str) -> Ocorrencia:
         """Traduz o resultado do adaptador para o registro (sem confiar cegamente nele)."""
@@ -886,6 +1051,7 @@ class _Rodada:
             tipo,
             id_externo,
             registro.pagina_id,
+            tentativa=execucao.tentativa,
         )
 
 
@@ -996,10 +1162,19 @@ def executar(
                 )
                 for devido in devidos:
                     do_post = [rodada.processar(devido.post_id, p) for p in devido.plataformas]
-                    if modo_real and do_post:
+                    concorrente = any(o.desfecho is Desfecho.EXECUCAO_CONCORRENTE for o in do_post)
+                    # T040: outra execução está em voo para este post; ela (ou a próxima rodada)
+                    # conclui. Concluir aqui veria a "iniciada" alheia como dúvida (falha).
+                    if modo_real and do_post and not concorrente:
                         # Todas as plataformas do post já foram processadas (T039).
                         conclusao = concluir_post(
-                            cliente, ids, config, devido.post_id, modo_real=modo_real
+                            cliente,
+                            ids,
+                            config,
+                            devido.post_id,
+                            modo_real=modo_real,
+                            agora=agora(),
+                            parametros=parametros,
                         )
                         conclusoes.append(conclusao)
                         do_post = [replace(o, pos_publicacao=conclusao.desfecho) for o in do_post]

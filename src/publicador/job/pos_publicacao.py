@@ -43,6 +43,12 @@ Decisões (cada uma coberta por teste):
   (``AGUARDANDO_NOVA_TENTATIVA``); o post fica em ``autorizado`` para a nova tentativa segura
   da T040, que depois da segunda falha deixa o post cair em ``falha`` por esta mesma regra.
   Se alguma plataforma já saiu, vale a regra do sucesso parcial (``falha``, A-003).
+* **T040**: com ``agora`` e ``parametros`` (o orquestrador sempre passa), a decisão usa a MESMA
+  regra da nova tentativa (``nova_tentativa.planejar``): se a nova tentativa já não cabe na
+  janela, a transitória vira falha definitiva (RF-30). Só contam as falhas da confirmação
+  atual (execução iniciada em ou depois de "Confirmado em"; A-003: uma nova confirmação
+  publica de novo o que falhou com certeza). Incerto, iniciada e sucesso contam de QUALQUER
+  data e confirmação (RF-38). Sem ``agora``/``parametros``, vale a regra da T039 (aguarda).
 * **Recusa** e execuções ``simulado``/``recusado``/``não executado`` nunca alteram o estágio.
 * **Configuração**: exige exatamente um estágio de papel ``publicado`` e um de ``falha`` e
   nenhum problema registrado; senão nada é lido nem alterado (``CONFIG_INVALIDA``).
@@ -58,10 +64,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Final
 
+from publicador.core.config import Parametros
 from publicador.core.confirmacao import propriedades_de_saida
 from publicador.core.modelos import EstadoExecucao, Execucao, PapelEstagio, Post
 from publicador.core.redacao import obter_logger
 from publicador.job.execucoes import CodigoMotivo, execucoes_do_post
+from publicador.job.nova_tentativa import Passo, da_confirmacao_atual, planejar
 from publicador.notion.bancos import Configuracao, IdsBancos
 from publicador.notion.cliente import ClienteNotion
 from publicador.notion.escrita import EdicaoConcorrente
@@ -129,7 +137,12 @@ class _Situacao(Enum):
     PENDENTE = "pendente"
 
 
-def _situacao(execucoes: tuple[Execucao, ...]) -> _Situacao:
+def _situacao(
+    execucoes: tuple[Execucao, ...],
+    post: Post | None = None,
+    agora: datetime | None = None,
+    parametros: Parametros | None = None,
+) -> _Situacao:
     estados = {e.estado for e in execucoes}
     if estados & _DUVIDA:
         return _Situacao.INCERTO
@@ -137,9 +150,25 @@ def _situacao(execucoes: tuple[Execucao, ...]) -> _Situacao:
         return _Situacao.SAIU
     if EstadoExecucao.SUCESSO_MODO_PRIVADO in estados:
         return _Situacao.SAIU_PRIVADO
-    falhas = [e for e in execucoes if e.estado is EstadoExecucao.FALHA]
+    confirmado_em = post.confirmado_em if post is not None else None
+    falhas = [
+        e
+        for e in execucoes
+        if e.estado is EstadoExecucao.FALHA and da_confirmacao_atual(e, confirmado_em)
+    ]
     if not falhas:
         return _Situacao.PENDENTE
+    if post is not None and agora is not None and parametros is not None:
+        plano = planejar(
+            falhas,
+            confirmado_em=confirmado_em,
+            publicar_em=post.publicar_em,
+            agora=agora,
+            parametros=parametros,
+        )
+        if plano.passo in (Passo.AGUARDAR, Passo.NOVA_TENTATIVA):
+            return _Situacao.AGUARDA_TENTATIVA
+        return _Situacao.FALHA_DEFINITIVA
     transitorias = all(e.motivo == CodigoMotivo.ERRO_TRANSITORIO.value for e in falhas)
     if transitorias and max(e.tentativa for e in falhas) < _TENTATIVA_FINAL:
         return _Situacao.AGUARDA_TENTATIVA
@@ -182,11 +211,13 @@ def concluir_post(
     post_id: str,
     *,
     modo_real: bool,
+    agora: datetime | None = None,
+    parametros: Parametros | None = None,
 ) -> ResultadoPos:
     """Avalia as execuções do post e, se couber, move o estágio para ``publicado``/``falha``.
 
     Nunca levanta. ``modo_real`` precisa ser exatamente ``True``: em simulação nada é lido
-    nem escrito.
+    nem escrito. ``agora`` (com fuso) e ``parametros``: regra da nova tentativa (T040).
     """
 
     def resultado(desfecho: DesfechoPos, motivo: str | None = None, **campos: Any) -> ResultadoPos:
@@ -204,7 +235,12 @@ def concluir_post(
     try:
         post = ler_post(cliente, post_id, config)
         situacoes = {
-            p: _situacao(tuple(r.execucao for r in execucoes_do_post(cliente, ids, post.id, p)))
+            p: _situacao(
+                tuple(r.execucao for r in execucoes_do_post(cliente, ids, post.id, p)),
+                post,
+                agora,
+                parametros,
+            )
             for p in sorted(post.plataformas)
         }
     except Exception as erro:  # noqa: BLE001 - sem leitura confiável, nada é alterado

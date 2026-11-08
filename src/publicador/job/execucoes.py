@@ -6,6 +6,9 @@ Regras invioláveis:
   legenda nem credencial. Todo valor gravado passa por validação de formato (ids,
   códigos e chaves têm padrão fechado); o motivo é um enum, nunca texto livre, e a
   propriedade "Texto do motivo" do banco NÃO é usada por este módulo.
+- Exceção ao uso de "Texto do motivo": ``registrar_resolucao`` (T040, RF-38) grava ali um
+  texto FIXO montado pelo próprio código (código da resolução, responsável validado em formato
+  fechado e instante), nunca texto vindo do post ou de exceção.
 - I-2: este módulo não autoriza nada. Gravar ``iniciada`` não é permissão; quem decide
   é a guarda. Aqui só se registra e se lê.
 
@@ -52,6 +55,7 @@ __all__ = [
     "execucoes_do_post",
     "iniciar_execucao",
     "registrar_recusa",
+    "registrar_resolucao",
     "registrar_resultado",
     "sinal_de_vida",
 ]
@@ -67,6 +71,7 @@ _PROP_MOTIVO: Final = "Código do motivo"
 _PROP_INICIO: Final = "Início"
 _PROP_FIM: Final = "Fim"
 _PROP_ID_EXTERNO: Final = "ID do post na plataforma"
+_PROP_TEXTO_MOTIVO: Final = "Texto do motivo"
 
 _SEM_ENVIO: Final = frozenset({EstadoExecucao.RECUSADA, EstadoExecucao.NAO_EXECUTADO})
 _RESULTADO_SINAL: Final = "sinal de vida"
@@ -92,6 +97,10 @@ _RE_CHAVE: Final = re.compile(r"[A-Za-z0-9_\-]{1,80}")
 _RE_PLATAFORMA: Final = re.compile(r"[A-Za-z0-9_\-]{1,40}")
 _RE_ID_EXTERNO: Final = re.compile(r"[A-Za-z0-9_.:\-]{1,128}")
 _RE_CODIGO: Final = re.compile(r"[a-z0-9_]{1,40}")
+# Texto da resolução manual: montado pelo código (código, nome validado e instante ISO).
+_RE_TEXTO_RESOLUCAO: Final = re.compile(r"[\w '.:+\-]{1,120}")
+_A_RESOLVER: Final = frozenset({EstadoExecucao.INCERTO, EstadoExecucao.INICIADA})
+_RESOLUCOES: Final = frozenset({EstadoExecucao.SUCESSO, EstadoExecucao.FALHA})
 
 
 class CodigoMotivo(Enum):
@@ -107,6 +116,12 @@ class CodigoMotivo(Enum):
     SIMULACAO = "simulacao"
     EXECUCAO_PERDIDA = "execucao_perdida"
     SEM_CONFIRMACAO_DA_PLATAFORMA = "sem_confirmacao_da_plataforma"
+    # T040: nova tentativa segura, concorrência e resolução manual do incerto (RF-25, RF-38).
+    EXECUCAO_CONCORRENTE = "execucao_concorrente"
+    TENTATIVAS_ESGOTADAS = "tentativas_esgotadas"
+    NOVA_TENTATIVA_FORA_DA_JANELA = "nova_tentativa_fora_da_janela"
+    RESOLVIDO_PUBLICADO = "resolvido_publicado"
+    RESOLVIDO_NAO_PUBLICADO = "resolvido_nao_publicado"
 
 
 class ErroRegistroExecucao(Exception):
@@ -414,6 +429,48 @@ def registrar_resultado(
     cliente.atualizar_pagina(registro.pagina_id, propriedades)
     execucao = replace(registro.execucao, estado=resultado, finalizada_em=agora, motivo=codigo)
     _log.info("execução %s: %s", registro.execucao.chave_idempotencia, resultado.value)
+    return RegistroExecucao(registro.pagina_id, execucao, id_externo)
+
+
+def registrar_resolucao(
+    cliente: ClienteNotion,
+    registro: RegistroExecucao,
+    resultado: EstadoExecucao,
+    motivo: CodigoMotivo,
+    id_externo: str | None,
+    texto: str,
+    agora: datetime,
+) -> RegistroExecucao:
+    """Resolução manual (RF-38) de uma execução ``incerto`` ou ``iniciada`` sem resultado.
+
+    Atualiza a MESMA página num único PATCH: Resultado (``sucesso`` ou ``falha``), código do
+    motivo, fim, identificador externo (opcional) e "Texto do motivo" (texto fixo e validado
+    montado por quem chama: nunca conteúdo do post). Não decide nada (I-2).
+    """
+    if registro.execucao.estado not in _A_RESOLVER:
+        raise ValueError("só uma execução incerta ou iniciada é resolvida manualmente")
+    if resultado not in _RESOLUCOES:
+        raise ValueError("a resolução manual grava só sucesso ou falha")
+    codigo = _codigo(motivo)
+    if codigo is None or not isinstance(motivo, CodigoMotivo):
+        raise ValueError("o motivo da resolução é obrigatório")
+    if id_externo is not None:
+        if resultado is not EstadoExecucao.SUCESSO:
+            raise ValueError("identificador externo só com sucesso")
+        _padrao(id_externo, _RE_ID_EXTERNO, "identificador externo")
+    _padrao(texto, _RE_TEXTO_RESOLUCAO, "texto da resolução")
+    _exigir_fuso(agora, "agora")
+    propriedades: dict[str, Any] = {
+        _PROP_RESULTADO: {"select": {"name": _NOME_RESULTADO[resultado]}},
+        _PROP_FIM: _data(agora),
+        _PROP_MOTIVO: {"rich_text": _texto(codigo)},
+        _PROP_TEXTO_MOTIVO: {"rich_text": _texto(texto)},
+    }
+    if id_externo is not None:
+        propriedades[_PROP_ID_EXTERNO] = {"rich_text": _texto(id_externo)}
+    cliente.atualizar_pagina(registro.pagina_id, propriedades)
+    execucao = replace(registro.execucao, estado=resultado, finalizada_em=agora, motivo=codigo)
+    _log.info("execução %s: resolvida (%s)", registro.execucao.chave_idempotencia, codigo)
     return RegistroExecucao(registro.pagina_id, execucao, id_externo)
 
 

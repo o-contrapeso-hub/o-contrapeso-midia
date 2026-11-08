@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -593,28 +594,50 @@ def test_a003_nova_confirmacao_publica_so_as_pendentes(armazem: ArmazemLocal) ->
     assert notion.estagio(P1) == ID_PUBLICADO
 
 
-def test_pendencia_t040_plataforma_com_falha_anterior_nao_e_republicada_pela_confirmacao(
+def test_t040_nova_confirmacao_republica_so_a_plataforma_que_falhou_com_certeza(
     armazem: ArmazemLocal,
 ) -> None:
-    """Documenta o limite atual: uma plataforma com execução ``falha`` aguarda a T040 (nova
-    tentativa segura) mesmo depois de uma nova confirmação; só as sem execução de falha são
-    publicadas por ela. Quem fecha isto é a T040."""
+    """Antes era ``test_pendencia_t040_...``: documentava que uma plataforma com execução
+    ``falha`` ficava presa mesmo depois de nova confirmação. A T040 fecha o limite: a falha
+    definitiva pertence à confirmação anterior; com a MESMA confirmação não há nova tentativa
+    (``SEM_NOVA_TENTATIVA``), e uma nova confirmação (posterior à falha) publica só a pendente,
+    passando por toda a guarda. O Instagram, que já saiu, nunca é reenviado."""
     notion = _notion(armazem)
     adaptadores = _adapt(notion, armazem, *DUAS)
     adaptadores["TikTok"].programar_publicacao(TipoDeResultado.FALHA_PERMANENTE)
     _executar(notion, armazem, adaptadores, publicar_real=True)
     assert notion.estagio(P1) == ID_FALHA
 
+    # Mesma confirmação (selo e "Confirmado em" anteriores à falha): sem nova tentativa.
     notion.posts[P1].propriedades["Estágio"] = {
         "type": "relation",
         "relation": [{"id": ID_CONFIRMADO}],
     }
     _selar(notion, P1, armazem)
     rel = _executar(notion, armazem, adaptadores, publicar_real=True)
-
-    assert rel.ocorrencia(P1, "TikTok").desfecho is Desfecho.AGUARDANDO_NOVA_TENTATIVA
+    assert rel.ocorrencia(P1, "TikTok").desfecho is Desfecho.SEM_NOVA_TENTATIVA
+    assert rel.ocorrencia(P1, "TikTok").motivo == "erro_permanente"
     assert adaptadores["TikTok"].publicacoes == 1 and adaptadores["Instagram"].publicacoes == 1
-    assert notion.estagio(P1) == ID_FALHA  # nada sai sem a T040; o post volta a falha
+    assert notion.estagio(P1) == ID_FALHA
+
+    # Nova confirmação (depois da falha): só o TikTok sai; o post fica publicado.
+    notion.posts[P1].propriedades["Estágio"] = {
+        "type": "relation",
+        "relation": [{"id": ID_CONFIRMADO}],
+    }
+    _selar(notion, P1, armazem)
+    confirmado = AGORA + timedelta(minutes=20)
+    notion.posts[P1].propriedades["Confirmado em"] = {
+        "type": "date",
+        "date": {"start": confirmado.isoformat()},
+    }
+    rel = _executar(
+        notion, armazem, adaptadores, publicar_real=True, agora=AGORA + timedelta(minutes=25)
+    )
+    assert rel.ocorrencia(P1, "Instagram").motivo == "execucao_existente"
+    assert rel.ocorrencia(P1, "TikTok").desfecho is Desfecho.SUCESSO
+    assert adaptadores["TikTok"].publicacoes == 2 and adaptadores["Instagram"].publicacoes == 1
+    assert notion.estagio(P1) == ID_PUBLICADO
 
 
 def test_dois_posts_sao_concluidos_de_forma_independente(armazem: ArmazemLocal) -> None:

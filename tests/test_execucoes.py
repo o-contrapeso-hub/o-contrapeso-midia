@@ -21,6 +21,7 @@ from publicador.job.execucoes import (
     chave_de,
     execucoes_do_post,
     iniciar_execucao,
+    registrar_recusa,
     registrar_resultado,
     sinal_de_vida,
 )
@@ -529,3 +530,86 @@ def test_propriedades_gravadas_sao_so_as_permitidas() -> None:
     }
     assert set(notion.paginas[0]["properties"]) <= permitidas
     assert "Texto do motivo" not in notion.paginas[0]["properties"]
+
+
+# ------------------------------------------------------------------ recusa de escrita única (T039)
+
+
+def _recusar(cliente: ClienteNotion, **kw: Any) -> RegistroExecucao:
+    args: dict[str, Any] = {
+        "post_id": POST,
+        "plataforma": "Instagram",
+        "chave_idempotencia": chave(),
+        "tentativa": 1,
+        "motivo": MotivoRecusa.SELO_DIVERGENTE,
+        "agora": AGORA,
+    }
+    args.update(kw)
+    return registrar_recusa(cliente, IDS, **args)
+
+
+def test_registrar_recusa_faz_uma_unica_criacao_ja_concluida() -> None:
+    cliente, notion = montar()
+    reg = _recusar(cliente)
+    assert [(c.metodo, c.url.rsplit("/", 1)[1]) for c in notion.chamadas] == [("POST", "pages")]
+    props = notion.paginas[0]["properties"]
+    assert props["Resultado"] == {"select": {"name": "recusado"}}
+    assert props["Código do motivo"]["rich_text"][0]["text"]["content"] == "selo_divergente"
+    assert props["Fim"]["date"]["start"].startswith("2026-11-07T12:00:00")
+    assert reg.execucao.estado is EstadoExecucao.RECUSADA
+    assert reg.execucao.finalizada_em == AGORA and reg.execucao.motivo == "selo_divergente"
+    # Lida de volta, a execução já nasce recusada: nunca passou por "iniciada".
+    achadas = buscar_por_chave(cliente, IDS, chave())
+    assert [r.execucao.estado for r in achadas] == [EstadoExecucao.RECUSADA]
+
+
+def test_registrar_recusa_nao_executado() -> None:
+    cliente, notion = montar()
+    reg = _recusar(
+        cliente, motivo=CodigoMotivo.ERRO_DESCONHECIDO, resultado=EstadoExecucao.NAO_EXECUTADO
+    )
+    assert notion.paginas[0]["properties"]["Resultado"] == {"select": {"name": "não executado"}}
+    assert reg.execucao.estado is EstadoExecucao.NAO_EXECUTADO
+    assert len(notion.chamadas) == 1
+
+
+@pytest.mark.parametrize("falha", [500, ErroTransporte("x")])
+def test_registrar_recusa_com_erro_incerto_nao_retenta_e_nao_deixa_iniciada(
+    falha: Exception | int,
+) -> None:
+    notion = NotionFalso(falhas_na_criacao=[falha])
+    cliente, _ = montar(notion)
+    with pytest.raises(ErroNotionIncerto):
+        _recusar(cliente)
+    assert len(notion.chamadas) == 1  # uma tentativa só, sem PATCH
+    assert notion.paginas == []  # nada órfão (nem "iniciada")
+
+
+@pytest.mark.parametrize(
+    "mudanca",
+    [
+        {"resultado": EstadoExecucao.SUCESSO},
+        {"resultado": EstadoExecucao.INICIADA},
+        {"motivo": "texto livre do usuario"},
+        {"motivo": None},
+        {"tentativa": 3},
+        {"agora": datetime(2026, 11, 7, 12, 0)},
+        {"plataforma": "Insta gram!"},
+        {"post_id": "nao-e-id"},
+    ],
+)
+def test_registrar_recusa_valida_antes_de_escrever(mudanca: dict[str, Any]) -> None:
+    cliente, notion = montar()
+    with pytest.raises(ValueError):
+        _recusar(cliente, **mudanca)
+    assert notion.chamadas == []
+
+
+def test_registrar_recusa_resposta_sem_id_e_falha_segura() -> None:
+    class SemId:
+        def enviar(self, *a: Any, **k: Any) -> RespostaHttp:
+            return resp(200, {"properties": {}})
+
+    cliente = ClienteNotion(SegredoStr(TOKEN), transporte=SemId(), dormir=lambda _: None)
+    with pytest.raises(ErroRegistroExecucao):
+        _recusar(cliente)

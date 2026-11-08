@@ -538,23 +538,37 @@ def test_publicar_real_falso_mesmo_com_variavel_no_ambiente(
 
 
 @pytest.mark.parametrize(
-    ("tipo", "desfecho", "resultado", "motivo"),
+    ("tipo", "desfecho", "resultado", "motivo", "estagio"),
     [
-        (TipoDeResultado.SUCESSO, Desfecho.SUCESSO, "sucesso", None),
+        (TipoDeResultado.SUCESSO, Desfecho.SUCESSO, "sucesso", None, ID_PUBLICADO),
         (
             TipoDeResultado.SUCESSO_MODO_PRIVADO,
             Desfecho.SUCESSO_MODO_PRIVADO,
             "sucesso em modo privado",
             "modo_privado",
+            ID_PUBLICADO,
         ),
         (
             TipoDeResultado.FALHA_TRANSITORIA,
             Desfecho.FALHA_TRANSITORIA,
             "falha",
             "erro_transitorio",
+            ID_CONFIRMADO,
         ),
-        (TipoDeResultado.FALHA_PERMANENTE, Desfecho.FALHA_PERMANENTE, "falha", "erro_permanente"),
-        (TipoDeResultado.INCERTO, Desfecho.INCERTO, "incerto", "plataforma_nao_confirmou"),
+        (
+            TipoDeResultado.FALHA_PERMANENTE,
+            Desfecho.FALHA_PERMANENTE,
+            "falha",
+            "erro_permanente",
+            ID_FALHA,
+        ),
+        (
+            TipoDeResultado.INCERTO,
+            Desfecho.INCERTO,
+            "incerto",
+            "plataforma_nao_confirmou",
+            ID_FALHA,
+        ),
     ],
 )
 def test_modo_real_registra_resultado_e_nao_publica_duas_vezes(
@@ -563,6 +577,7 @@ def test_modo_real_registra_resultado_e_nao_publica_duas_vezes(
     desfecho: Desfecho,
     resultado: str,
     motivo: str | None,
+    estagio: str,
 ) -> None:
     notion = _cenario(armazem, (P1, _props()))
     adaptadores = _adaptadores(notion, "Instagram")
@@ -578,28 +593,32 @@ def test_modo_real_registra_resultado_e_nao_publica_duas_vezes(
     assert notion.registros(P1) == [
         {"plataforma": "Instagram", "resultado": resultado, "motivo": motivo}
     ]
-    assert notion.estagio(P1) == ID_CONFIRMADO  # pós-publicação é da T039
+    # Pós-publicação (T039): o estágio acompanha o resultado real; o transitório aguarda a T040.
+    assert notion.estagio(P1) == estagio  # ajustado na T039 (antes: sempre "confirmado")
+    assert oc.pos_publicacao is not None
 
     rel2 = _executar(notion, armazem, adaptadores, publicar_real=True)
 
     assert adaptadores["Instagram"].publicacoes == 1  # nunca duas vezes
-    assert rel2.ocorrencia(P1, "Instagram").desfecho in (
-        Desfecho.RECUSADO,
-        Desfecho.AGUARDANDO_NOVA_TENTATIVA,
-    )
-    if tipo in (TipoDeResultado.FALHA_TRANSITORIA, TipoDeResultado.FALHA_PERMANENTE):
+    if estagio == ID_CONFIRMADO:  # falha transitória: segue autorizado, aguarda nova tentativa
         assert rel2.ocorrencia(P1, "Instagram").desfecho is Desfecho.AGUARDANDO_NOVA_TENTATIVA
-    else:
-        assert rel2.ocorrencia(P1, "Instagram").motivo == "execucao_existente"
+    else:  # saiu de "confirmado": a rodada nem lista mais o post
+        assert rel2.ocorrencias == ()
+    assert len(notion.registros(P1)) == 1  # nenhuma recusa nova registrada
 
 
 def test_recusa_repetida_nao_e_registrada_de_novo(armazem: ArmazemLocal) -> None:
+    # Ajustado na T039: antes o cenário era "sucesso" seguido de recusas, mas após o sucesso o
+    # post passa a "publicado" e sai da rodada. Agora a recusa vem de conexão sem validade.
     notion = _cenario(armazem, (P1, _props()))
-    adaptadores = _adaptadores(notion, "Instagram")
+    adaptadores = {
+        "Instagram": AdaptadorEspiao("Instagram", notion.eventos, dias_restantes_conexao=None)
+    }
     for _ in range(3):
         _executar(notion, armazem, adaptadores, publicar_real=True)
-    assert [r["resultado"] for r in notion.registros(P1)] == ["sucesso", "recusado"]
-    assert adaptadores["Instagram"].publicacoes == 1
+    assert [r["resultado"] for r in notion.registros(P1)] == ["recusado"]
+    assert adaptadores["Instagram"].publicacoes == 0
+    assert notion.estagio(P1) == ID_CONFIRMADO  # recusa não altera o estágio
 
 
 def test_simulacao_anterior_nao_impede_publicacao_real(armazem: ArmazemLocal) -> None:
@@ -634,10 +653,13 @@ def test_falha_ao_registrar_resultado_apos_publicar_nao_republica(armazem: Armaz
     oc = rel.ocorrencia(P1, "Instagram")
     assert oc.desfecho is Desfecho.SUCESSO and oc.registro is Registro.FALHOU
     assert rel.erros_de_registro == (oc,)
-    # A execução ficou "iniciada" no Notion: a próxima rodada recusa e não publica de novo.
+    # A execução ficou "iniciada" no Notion (pode ter saído, não foi confirmada): a pós-publicação
+    # NÃO marca "publicado" (T039; ajustado) e leva o post a "falha"; nada é publicado de novo.
+    assert notion.registros(P1)[0]["resultado"] is None
+    assert notion.estagio(P1) == ID_FALHA
     notion.falhar_patch_execucao = False
     rel2 = _executar(notion, armazem, adaptadores, publicar_real=True)
-    assert rel2.ocorrencia(P1, "Instagram").motivo == "execucao_existente"
+    assert rel2.ocorrencias == ()
     assert adaptadores["Instagram"].publicacoes == 1
 
 
@@ -950,3 +972,96 @@ def test_sinal_de_vida_reaproveita_pagina_informada(armazem: ArmazemLocal) -> No
     rel2 = _executar(notion, armazem, adaptadores, pagina_sinal_de_vida=rel.sinal_de_vida)
     assert rel2.sinal_de_vida == rel.sinal_de_vida
     assert len(notion.sinais()) == 1
+
+
+# ------------------------------------------------------------------ T039: recusa em escrita única
+
+
+def _criacoes(notion: NotionFalso) -> list[tuple[str, ...]]:
+    return [e for e in notion.eventos if e == ("notion", "POST", "/pages")]
+
+
+def test_recusa_e_gravada_com_uma_unica_criacao_e_nunca_fica_iniciada(
+    armazem: ArmazemLocal,
+) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    adaptadores = {
+        "Instagram": AdaptadorEspiao("Instagram", notion.eventos, dias_restantes_conexao=None)
+    }
+
+    rel = _executar(notion, armazem, adaptadores, publicar_real=True)
+
+    assert rel.ocorrencia(P1, "Instagram").registro is Registro.GRAVADO
+    # 1 criação da recusa + 1 do sinal de vida; nenhum PATCH em página de execução.
+    assert len(_criacoes(notion)) == 2
+    assert not [
+        e for e in notion.eventos if e[:2] == ("notion", "PATCH") and e[2].startswith("/pages/")
+    ]
+    assert [r["resultado"] for r in notion.registros(P1)] == ["recusado"]
+
+
+def test_falha_ao_criar_a_recusa_nao_deixa_execucao_orfa_nem_retenta(
+    armazem: ArmazemLocal,
+) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    notion.falhas_na_criacao = 1  # 500 na criação da recusa: ErroNotionIncerto
+    adaptadores = {
+        "Instagram": AdaptadorEspiao("Instagram", notion.eventos, dias_restantes_conexao=None)
+    }
+
+    rel = _executar(notion, armazem, adaptadores, publicar_real=True)
+
+    oc = rel.ocorrencia(P1, "Instagram")
+    assert oc.desfecho is Desfecho.RECUSADO and oc.registro is Registro.FALHOU
+    assert notion.registros(P1) == []  # nada "iniciada" ficou para bloquear o post
+    assert notion.estagio(P1) == ID_CONFIRMADO
+    # A criação da recusa não é retentada na rodada (só o sinal de vida cria outra página).
+    assert len(_criacoes(notion)) == 2
+
+
+def test_erro_inesperado_registra_nao_executado_em_escrita_unica(
+    armazem: ArmazemLocal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    adaptadores = _adaptadores(notion, "Instagram")
+
+    def explode(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("falha inesperada")
+
+    monkeypatch.setattr("publicador.job.orquestrador.avaliar", explode)
+    rel = _executar(notion, armazem, adaptadores, publicar_real=True)
+
+    assert rel.ocorrencia(P1, "Instagram").desfecho is Desfecho.ERRO
+    assert notion.registros(P1) == [
+        {"plataforma": "Instagram", "resultado": "não executado", "motivo": "erro_desconhecido"}
+    ]
+    assert len(_criacoes(notion)) == 2  # o registro + o sinal de vida
+
+
+# ------------------------------------------------------------------ T039: tipos por formato padrão
+
+
+def test_tipos_por_formato_vem_da_configuracao_por_padrao(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    adaptadores = _adaptadores(notion, "Instagram")
+    config = _config(tipos_por_formato=TIPOS)
+    rel = _executar(notion, armazem, adaptadores, config=config, tipos_por_formato=None)
+    assert rel.ocorrencia(P1, "Instagram").desfecho is Desfecho.SIMULADO
+
+
+def test_tipos_por_formato_explicito_tem_prioridade_sobre_a_configuracao(
+    armazem: ArmazemLocal,
+) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    adaptadores = _adaptadores(notion, "Instagram")
+    config = _config(tipos_por_formato=TIPOS)
+    rel = _executar(notion, armazem, adaptadores, config=config, tipos_por_formato={})
+    assert rel.ocorrencia(P1, "Instagram").motivo == "formato_sem_tipo"
+    assert adaptadores["Instagram"].publicacoes == 0
+
+
+def test_sem_mapeamento_na_configuracao_tudo_e_recusado(armazem: ArmazemLocal) -> None:
+    notion = _cenario(armazem, (P1, _props()))
+    adaptadores = _adaptadores(notion, "Instagram")
+    rel = _executar(notion, armazem, adaptadores, tipos_por_formato=None)
+    assert rel.ocorrencia(P1, "Instagram").motivo == "formato_sem_tipo"

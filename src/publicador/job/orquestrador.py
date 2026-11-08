@@ -52,13 +52,17 @@ Decisões (mais restritivas que a guarda, nunca menos; I-2):
   agora. Uma página do banco Posts com data ilegível impede provar a ordem: recusa.
 * **Conexão (RF-18)**: ``EstadoConexao.dias_restantes`` vira ``expira_em = agora + dias``
   (limite inferior verdadeiro). Validade desconhecida (``None``) ou 0 dia: a guarda recusa.
-* **Tipos por formato (RF-43, A-023)**: o mapeamento ainda não é lido do banco Formatos;
-  chega por ``tipos_por_formato``. Padrão vazio = tudo recusado (``FORMATO_SEM_TIPO``).
+* **Tipos por formato (RF-43, A-023)**: por padrão vêm de ``config.tipos_por_formato`` (lido
+  do banco Formatos por ``ler_configuracao``); o parâmetro explícito ``tipos_por_formato`` tem
+  prioridade, inclusive vazio. Sem mapeamento = tudo recusado (``FORMATO_SEM_TIPO``).
 * Recusas usam tentativa 1 e, sem selo, a chave ``chave_de(post, plataforma, "sem-selo")``.
 
-Ganchos: T039 (pós-publicação: estágio ``publicado``/``falha``) deve consumir as ocorrências
-com ``resultado`` e ``pagina_execucao`` do relatório (nada aqui muda estágio por resultado).
-T040 (nova tentativa) entra no ponto ``AGUARDANDO_NOVA_TENTATIVA``.
+Pós-publicação (T039, ``job/pos_publicacao.py``): em modo real, depois de processar TODAS as
+plataformas de um post, ``concluir_post`` lê as execuções do post no Notion e move o estágio
+para ``publicado`` ou ``falha`` num PATCH único (nunca para ``autorizado``; recusa e
+simulação não mudam o estágio). Erro ali não derruba a rodada nem desfaz execuções; o
+desfecho vai em ``Ocorrencia.pos_publicacao`` e ``RelatorioExecucao.pos_publicacao``.
+Gancho T040 (nova tentativa) entra no ponto ``AGUARDANDO_NOVA_TENTATIVA``.
 
 I-1: logs, registros, exceções e relatório têm só ids, plataforma, desfecho e códigos; nunca
 título, corpo, artes, selo, token, mensagem de exceção ou resposta bruta. Exceções inesperadas
@@ -66,9 +70,9 @@ vão ao log só pelo nome do tipo. Requisições ao Notion respeitam o limite de
 ``ClienteNotion``. Relógio sempre injetado (nunca ``datetime.now``).
 
 Limites: entre a guarda e o envio ainda há janela (TOCTOU), coberta pela releitura e pelo
-recálculo do selo a cada post e plataforma; registrar uma recusa usa duas escritas (criar
-``iniciada`` e concluir): se a segunda falhar, sobra uma execução ``iniciada`` que bloqueia o
-post até resolução manual (lado seguro; ver pendências da T038).
+recálculo do selo a cada post e plataforma. Recusas e "não executado" são gravados em UMA
+única escrita (``registrar_recusa``, T039): não existe mais execução ``iniciada`` órfã por
+falha na segunda escrita.
 """
 
 from __future__ import annotations
@@ -76,7 +80,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Final
@@ -112,9 +116,11 @@ from publicador.job.execucoes import (
     chave_de,
     execucoes_do_post,
     iniciar_execucao,
+    registrar_recusa,
     registrar_resultado,
     sinal_de_vida,
 )
+from publicador.job.pos_publicacao import DesfechoPos, ResultadoPos, concluir_post
 from publicador.notion.bancos import Configuracao, IdsBancos
 from publicador.notion.cliente import ClienteNotion
 from publicador.notion.mapeamento import (
@@ -221,6 +227,9 @@ class Ocorrencia:
     resultado: TipoDeResultado | None = None
     id_externo: str | None = None
     pagina_execucao: str | None = None
+    # Desfecho da pós-publicação do POST (T039), repetido em cada plataforma dele; ``None`` em
+    # simulação ou quando o post não chegou a ser concluído nesta rodada.
+    pos_publicacao: DesfechoPos | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +240,8 @@ class RelatorioExecucao:
     ocorrencias: tuple[Ocorrencia, ...] = ()
     falha: FalhaGeral | None = None
     sinal_de_vida: str | None = None
+    # Um item por post processado em modo real (T039); vazio em simulação.
+    pos_publicacao: tuple[ResultadoPos, ...] = ()
 
     def por_desfecho(self, desfecho: Desfecho) -> tuple[Ocorrencia, ...]:
         return tuple(o for o in self.ocorrencias if o.desfecho is desfecho)
@@ -678,13 +689,21 @@ class _Rodada:
         estado: EstadoExecucao,
         motivo: MotivoRecusa | CodigoMotivo,
     ) -> Registro:
-        """Registro sem envio (recusa ou não executado): cria e conclui em seguida."""
+        """Registro sem envio (recusa ou não executado) em UMA única escrita (T039): a página
+        já nasce concluída, então uma falha nunca deixa uma execução ``iniciada`` órfã."""
         try:
             chave = chave or self._chave(post_id, plataforma, None)
-            registro = iniciar_execucao(
-                self._cliente, self._ids, post_id, plataforma, chave, _TENTATIVA, self._agora()
+            registrar_recusa(
+                self._cliente,
+                self._ids,
+                post_id,
+                plataforma,
+                chave,
+                _TENTATIVA,
+                motivo,
+                self._agora(),
+                estado,
             )
-            registrar_resultado(self._cliente, registro, estado, motivo, None, self._agora())
         except Exception as erro:  # noqa: BLE001 - registro é melhor esforço aqui
             _log.error(
                 "orquestrador: %s não registrado; post %s plataforma %s (%s)",
@@ -835,8 +854,8 @@ class _Rodada:
         """Grava o resultado na MESMA execução. Se falhar, NÃO reenvia: a execução continua
         ``iniciada`` (bloqueante para a guarda) e o erro vai ao relatório.
 
-        Gancho T039: a pós-publicação (estágio ``publicado``/``falha``) consome a ocorrência
-        devolvida aqui (``resultado`` e ``pagina_execucao``); nada muda o estágio nesta tarefa.
+        O estágio do post não muda aqui: a pós-publicação (T039) roda depois que todas as
+        plataformas do post foram processadas, a partir das execuções gravadas no Notion.
         """
         execucao = registro.execucao
         situacao = Registro.GRAVADO
@@ -926,7 +945,14 @@ def executar(
     """
     modo_real = publicar_real is True
     instante = agora()
+    if config.problemas_tipos:  # só a contagem: o texto do mapeamento nunca vai ao log
+        _log.warning(
+            "orquestrador: %d problema(s) no mapeamento de tipos por formato; os formatos "
+            "afetados ficam sem tipo (recusa)",
+            len(config.problemas_tipos),
+        )
     ocorrencias: list[Ocorrencia] = []
+    conclusoes: list[ResultadoPos] = []
     falha: FalhaGeral | None = None
     sinal: str | None = None
 
@@ -964,11 +990,20 @@ def executar(
                     parametros,
                     agora,
                     modo_real,
-                    tipos_por_formato if tipos_por_formato is not None else {},
+                    tipos_por_formato
+                    if tipos_por_formato is not None
+                    else config.tipos_por_formato,
                 )
                 for devido in devidos:
-                    for plataforma in devido.plataformas:
-                        ocorrencias.append(rodada.processar(devido.post_id, plataforma))
+                    do_post = [rodada.processar(devido.post_id, p) for p in devido.plataformas]
+                    if modo_real and do_post:
+                        # Todas as plataformas do post já foram processadas (T039).
+                        conclusao = concluir_post(
+                            cliente, ids, config, devido.post_id, modo_real=modo_real
+                        )
+                        conclusoes.append(conclusao)
+                        do_post = [replace(o, pos_publicacao=conclusao.desfecho) for o in do_post]
+                    ocorrencias.extend(do_post)
         else:
             _log.error("orquestrador: rodada sem publicação; motivo: %s", falha.value)
     finally:
@@ -978,7 +1013,7 @@ def executar(
             except Exception as erro:  # noqa: BLE001 - não derruba o relatório
                 _log.error("orquestrador: sinal de vida não gravado (%s)", _nome_erro(erro))
 
-    relatorio = RelatorioExecucao(modo_real, tuple(ocorrencias), falha, sinal)
+    relatorio = RelatorioExecucao(modo_real, tuple(ocorrencias), falha, sinal, tuple(conclusoes))
     resumo = ", ".join(f"{k} {v}" for k, v in relatorio.contagens().items() if v)
     _log.info(
         "orquestrador: modo %s; %d ocorrências (%s); erros de registro %d",

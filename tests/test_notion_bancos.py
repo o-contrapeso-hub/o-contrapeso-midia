@@ -24,6 +24,7 @@ from publicador.notion.bancos import (
     ler_configuracao,
     serie_de_pagina,
     tema_de_pagina,
+    tipos_de_pagina,
 )
 from publicador.notion.cliente import ClienteNotion, ErroNotion, RespostaHttp
 
@@ -280,3 +281,101 @@ def test_falha_do_notion_propaga() -> None:
     cliente, _ = montar(series=resposta({"code": "unauthorized"}, status=401))
     with pytest.raises(ErroNotion):
         ler_configuracao(cliente, IDS)
+
+
+# --------------------------------------------------------------------------- tipos por formato
+
+ID_FORMATO_CARROSSEL = "00000000-0000-4000-8000-000000000300"
+ID_FORMATO_IMAGEM = "00000000-0000-4000-8000-000000000301"
+
+
+def formatos_com(
+    mapeamentos: dict[str, str], compativeis: dict[str, list[str]] | None = None
+) -> RespostaHttp:
+    """Fixture de Formatos com o texto de "Mapeamento por plataforma" preenchido."""
+    dados = copy.deepcopy(carregar("formatos"))
+    for item in dados["results"]:
+        props = item["properties"]
+        if item["id"] in mapeamentos:
+            props["Mapeamento por plataforma"]["rich_text"] = [
+                {"type": "text", "plain_text": mapeamentos[item["id"]]}
+            ]
+        if compativeis and item["id"] in compativeis:
+            props["Plataformas compatíveis"]["multi_select"] = [
+                {"id": f"m{i}", "name": n} for i, n in enumerate(compativeis[item["id"]])
+            ]
+    return resposta(dados)
+
+
+def test_fixture_sem_mapeamento_nao_tem_tipos_nem_problemas() -> None:
+    cliente, _ = montar()
+    cfg = ler_configuracao(cliente, IDS)
+    assert cfg.tipos_por_formato == {}  # RF-43: sem mapeamento, a guarda recusa
+    assert cfg.problemas_tipos == ()
+    assert cfg.problemas == ()
+
+
+def test_tipos_por_formato_no_formato_que_a_guarda_espera() -> None:
+    resp_formatos = formatos_com(
+        {
+            ID_FORMATO_CARROSSEL: "Instagram: carrossel\nTikTok = fotos",
+            ID_FORMATO_IMAGEM: "Instagram: imagem; TikTok: fotos\n\n",
+        },
+        {
+            ID_FORMATO_CARROSSEL: ["Instagram", "TikTok"],
+            ID_FORMATO_IMAGEM: ["Instagram", "TikTok"],
+        },
+    )
+    cliente, transporte = montar(formatos=resp_formatos)
+    cfg = ler_configuracao(cliente, IDS)
+    assert cfg.tipos_por_formato == {
+        "Carrossel de fatos": {"Instagram": "carrossel", "TikTok": "fotos"},
+        "Imagem única": {"Instagram": "imagem", "TikTok": "fotos"},
+    }
+    assert cfg.problemas_tipos == () and cfg.problemas == ()
+    # Mesma consulta ao banco Formatos: nenhuma requisição extra.
+    assert sum("/databases/" + IDS.formatos in u for u in transporte.urls) == 1
+
+
+def test_entrada_malformada_conflitante_ou_fora_das_compativeis_nao_entra() -> None:
+    texto = "Instagram: carrossel\nsem separador\nTikTok: fotos\nTikTok: video\nYouTube: shorts"
+    pagina = copy.deepcopy(carregar("formatos")["results"][0])
+    pagina["properties"]["Mapeamento por plataforma"]["rich_text"] = [
+        {"type": "text", "plain_text": texto}
+    ]
+    pagina["properties"]["Plataformas compatíveis"]["multi_select"] = [
+        {"id": "a", "name": "Instagram"},
+        {"id": "b", "name": "TikTok"},
+    ]
+    tipos, problemas = tipos_de_pagina(pagina)
+    assert tipos == {"Instagram": "carrossel"}  # TikTok conflita; YouTube não é compatível
+    assert len(problemas) == 3
+    for linha in ("sem separador", "fotos", "shorts"):
+        assert all(linha not in p for p in problemas)  # nada do texto livre nas mensagens
+
+
+def test_plataforma_nao_compativel_e_recusada_mesmo_com_mapeamento() -> None:
+    resp_formatos = formatos_com({ID_FORMATO_CARROSSEL: "TikTok: fotos"})  # só Instagram
+    cliente, _ = montar(formatos=resp_formatos)
+    cfg = ler_configuracao(cliente, IDS)
+    assert cfg.tipos_por_formato == {}
+    assert len(cfg.problemas_tipos) == 1
+    assert cfg.problemas == ()  # não derruba a configuração dos estágios
+
+
+def test_formatos_com_o_mesmo_nome_ficam_sem_tipos() -> None:
+    dados = copy.deepcopy(carregar("formatos"))
+    dados["results"][1]["properties"]["Nome"]["title"][0]["plain_text"] = "Carrossel de fatos"
+    for item in dados["results"][:2]:
+        item["properties"]["Mapeamento por plataforma"]["rich_text"] = [
+            {"type": "text", "plain_text": "Instagram: imagem"}
+        ]
+    cliente, _ = montar(formatos=resposta(dados))
+    cfg = ler_configuracao(cliente, IDS)
+    assert "Carrossel de fatos" not in cfg.tipos_por_formato
+    assert any("mesmo nome" in p for p in cfg.problemas_tipos)
+
+
+def test_configuracao_continua_construivel_sem_tipos() -> None:
+    cfg = Configuracao(estagios={}, formatos={}, series={}, temas={}, problemas=())
+    assert cfg.tipos_por_formato == {} and cfg.problemas_tipos == ()

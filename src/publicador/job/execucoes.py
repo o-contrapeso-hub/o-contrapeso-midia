@@ -51,6 +51,7 @@ __all__ = [
     "chave_de",
     "execucoes_do_post",
     "iniciar_execucao",
+    "registrar_recusa",
     "registrar_resultado",
     "sinal_de_vida",
 ]
@@ -67,6 +68,7 @@ _PROP_INICIO: Final = "Início"
 _PROP_FIM: Final = "Fim"
 _PROP_ID_EXTERNO: Final = "ID do post na plataforma"
 
+_SEM_ENVIO: Final = frozenset({EstadoExecucao.RECUSADA, EstadoExecucao.NAO_EXECUTADO})
 _RESULTADO_SINAL: Final = "sinal de vida"
 _CHAVE_SINAL: Final = "sinal-de-vida"
 _TENTATIVAS_VALIDAS: Final = frozenset({1, 2})
@@ -314,6 +316,70 @@ def iniciar_execucao(
         iniciada_em=agora,
     )
     _log.info("execução iniciada: %s tentativa %d", chave_idempotencia, tentativa)
+    return RegistroExecucao(pagina_id, execucao)
+
+
+def registrar_recusa(
+    cliente: ClienteNotion,
+    ids: _TemBancoExecucoes,
+    post_id: str,
+    plataforma: str,
+    chave_idempotencia: str,
+    tentativa: int,
+    motivo: MotivoRecusa | CodigoMotivo,
+    agora: datetime,
+    resultado: EstadoExecucao = EstadoExecucao.RECUSADA,
+) -> RegistroExecucao:
+    """Registra uma execução SEM envio (recusa ou "não executado") em UMA única escrita (T039).
+
+    Cria a página já com Resultado, código do motivo, início e fim num único POST. Nunca
+    existe a etapa ``iniciada``: se a criação falhar não sobra página nenhuma (nem uma
+    ``iniciada`` órfã que bloquearia o post). Escrita não idempotente: ``ErroNotionIncerto``
+    (e qualquer ``ErroNotion``) propaga SEM nova tentativa; a página pode ter sido criada e a
+    checagem por post e plataforma a encontrará na próxima rodada. Mesmas validações de
+    formato fechado de ``iniciar_execucao``; ``motivo`` é sempre um enum (I-1).
+    """
+    if resultado not in _SEM_ENVIO:
+        raise ValueError("só recusada ou não executado são registrados sem envio")
+    codigo = _codigo(motivo)
+    if codigo is None:
+        raise ValueError("o motivo é obrigatório")
+    banco = _normalizar_id(ids.execucoes, "banco Execuções")
+    post = _normalizar_id(post_id, "post_id")
+    _padrao(plataforma, _RE_PLATAFORMA, "plataforma")
+    _padrao(chave_idempotencia, _RE_CHAVE, "chave de idempotência")
+    if tentativa not in _TENTATIVAS_VALIDAS:
+        raise ValueError("tentativa deve ser 1 ou 2")
+    _exigir_fuso(agora, "agora")
+    propriedades: dict[str, Any] = {
+        _PROP_CHAVE: {"title": _texto(chave_idempotencia)},
+        _PROP_POST: {"relation": [{"id": post}]},
+        _PROP_PLATAFORMA: {"select": {"name": plataforma}},
+        _PROP_TENTATIVA: {"select": {"name": str(tentativa)}},
+        _PROP_RESULTADO: {"select": {"name": _NOME_RESULTADO[resultado]}},
+        _PROP_MOTIVO: {"rich_text": _texto(codigo)},
+        _PROP_INICIO: _data(agora),
+        _PROP_FIM: _data(agora),
+    }
+    try:
+        resposta = cliente.criar_pagina({"database_id": banco}, propriedades)
+    except ErroNotionIncerto:
+        _log.warning("execução %s: criação incerta; não repetida", chave_idempotencia)
+        raise
+    pagina_id = resposta.get("id")
+    if not isinstance(pagina_id, str) or not pagina_id:
+        raise ErroRegistroExecucao("resposta do Notion sem id do registro de execução")
+    execucao = Execucao(
+        chave_idempotencia=chave_idempotencia,
+        post_id=post,
+        plataforma=plataforma,
+        estado=resultado,
+        tentativa=tentativa,
+        iniciada_em=agora,
+        finalizada_em=agora,
+        motivo=codigo,
+    )
+    _log.info("execução %s: %s", chave_idempotencia, resultado.value)
     return RegistroExecucao(pagina_id, execucao)
 
 

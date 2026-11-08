@@ -4,8 +4,9 @@ resumable (T045) e imagem/carrossel via cópia pública temporária (T044).
 ``publicar`` publica vídeo (Reels, ou Story em vídeo) por upload resumable, sem URL pública,
 e imagem única (feed ou Story em imagem) e carrossel (2 a 10 imagens) pela URL de uma cópia
 TEMPORÁRIA no repositório público de estágio (D1; ``publicador.artes.estagio``).
-``consultar`` devolve ``DESCONHECIDO`` (a T047 implementa de verdade). O adaptador não é
-registrado no ``__main__`` (modo real segue sem adaptadores até a T049).
+``consultar`` (T047) serve à nova tentativa segura e só devolve ``NAO_ENCONTRADO`` com certeza
+(ver "Consulta" abaixo). O adaptador não é registrado no ``__main__`` (modo real segue sem
+adaptadores até a T049).
 
 Fluxo real da imagem/carrossel (T044):
 
@@ -52,6 +53,36 @@ e devolve o mesmo sucesso. Limitação: o estado vive só na instância (um novo
 começa do zero); entre processos quem protege é o registro ``iniciada`` do orquestrador e a
 ``consultar`` da T047.
 
+Consulta (T047; RF-12, RF-25, RF-38; plano 4.2 e R8), a outra parte crítica:
+
+A Graph API NÃO tem busca por chave de idempotência, e o adaptador não altera a legenda do post
+(nenhum marcador: o conteúdo publicado é o que o usuário confirmou, coberto pelo selo; a spec
+não autoriza acrescentar texto). Logo a correspondência por conteúdo é impossível e
+``ENCONTRADO`` só sai do andamento local. O orquestrador reenvia se e somente se recebe
+``NAO_ENCONTRADO``; um falso "não encontrado" é uma publicação duplicada, então:
+
+* ``ENCONTRADO``: só se esta instância guardou o resultado do ``media_publish`` (``id`` válido).
+  A listagem nunca produz ``ENCONTRADO`` (sem marcador, não há correspondência inequívoca).
+* ``NAO_ENCONTRADO``, só em dois casos:
+
+  1. a instância tem andamento da chave com ``publish_enviado`` falso: o ``media_publish``
+     NUNCA foi enviado nesta instância (o flag é gravado antes de enviar);
+  2. sem andamento (processo novo, o caso real do Actions): conexão ATIVA e as listagens
+     ``/{conta}/media`` e ``/{conta}/stories`` lidas com sucesso, sem NENHUMA mídia com
+     ``timestamp`` dentro da janela de consulta (padrão 3 h: os 120 min de tolerância do RF-24
+     mais 1 h de folga para atraso de relógio e de indexação). A listagem precisa ser completa
+     na janela: ou não há próxima página, ou a página traz uma mídia mais antiga que o limite
+     e a ordem é decrescente (a paginação nunca é seguida).
+* ``DESCONHECIDO`` em todo o resto: andamento com ``publish_enviado`` sem resultado (INCERTO
+  do mesmo processo, nunca vira ``NAO_ENCONTRADO``), mídia na janela (pode ser a nossa),
+  conexão inválida, erro de rede, 4xx/5xx, JSON malformado, item sem ``id``/``timestamp``
+  legível com fuso, lista truncada ou fora de ordem, chave ou relógio inválidos, qualquer
+  exceção. ``consultar`` nunca levanta.
+
+Consequência prática: sem marcador, o caso 2 só libera o reenvio quando a conta não publicou
+NADA nas últimas 3 h; em conta movimentada, vira ``DESCONHECIDO`` e o post fica ``incerto``
+(resolução manual, RF-38). É o preço de nunca duplicar.
+
 Regras:
 
 * I-1: o token chega como ``SegredoStr`` e só é revelado ao montar o cabeçalho
@@ -84,7 +115,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import PurePosixPath
 from typing import Final
@@ -138,6 +169,8 @@ _RE_ID_CONTA: Final = re.compile(r"[0-9]{1,30}")
 _RE_VERSAO: Final = re.compile(r"v[0-9]{1,3}\.[0-9]{1,2}")
 _RE_ID_GRAPH: Final = re.compile(r"[0-9]{1,40}")
 _LEGENDA_MAX: Final = 2200
+_JANELA_CONSULTA: Final = timedelta(hours=3)
+_LIMITE_LISTAGEM: Final = 50
 _TIMEOUT_UPLOAD: Final = 300.0
 _INTERVALO_STATUS: Final = 5.0
 _MAX_TENTATIVAS_STATUS: Final = 36
@@ -287,7 +320,10 @@ class AdaptadorInstagram:
         dormir: Callable[[float], None] = time.sleep,
         hosts_upload: frozenset[str] = _HOSTS_UPLOAD,
         estagio: EstagioPublico | None = None,
+        janela_consulta: timedelta = _JANELA_CONSULTA,
     ) -> None:
+        if not isinstance(janela_consulta, timedelta) or janela_consulta <= timedelta(0):
+            raise ValueError("janela_consulta deve ser positiva.")
         if estagio is not None and not all(
             callable(getattr(estagio, nome, None)) for nome in ("publicar_copia", "apagar_copia")
         ):
@@ -317,6 +353,7 @@ class AdaptadorInstagram:
         self._dormir = dormir
         self._hosts_upload = hosts_upload
         self._estagio = estagio
+        self._janela_consulta = janela_consulta
         self._andamentos: dict[str, _Andamento] = {}
 
     def __repr__(self) -> str:
@@ -869,6 +906,82 @@ class AdaptadorInstagram:
         motivo = "publish_resposta_invalida" if 200 <= status < 300 else f"publish_http_{status}"
         return ResultadoPublicacao(TipoDeResultado.INCERTO, chave, motivo=motivo)
 
+    # ------------------------------------------------------------------ consulta (T047)
+
     def consultar(self, chave_idempotencia: str) -> ResultadoConsulta:
-        """Sem consulta real até a T047: DESCONHECIDO (nunca autoriza nova tentativa)."""
-        return ResultadoConsulta(EstadoConsulta.DESCONHECIDO)
+        """Nova tentativa segura (RF-25): ver "Consulta" no docstring do módulo.
+
+        Nunca levanta (erro vira ``DESCONHECIDO``) e só devolve ``NAO_ENCONTRADO`` com certeza.
+        """
+        desconhecido = ResultadoConsulta(EstadoConsulta.DESCONHECIDO)
+        try:
+            return self._consultar(chave_idempotencia) or desconhecido
+        except Exception as erro:  # noqa: BLE001 - dúvida, nunca exceção nem detalhe
+            _log.warning("instagram consultar: erro interno (%s)", type(erro).__name__)
+            return desconhecido
+
+    def _consultar(self, chave: object) -> ResultadoConsulta | None:
+        """``None`` = dúvida (o chamador devolve ``DESCONHECIDO``)."""
+        if not isinstance(chave, str) or not chave.strip():
+            return None
+        andamento = self._andamentos.get(chave)
+        if andamento is not None:
+            if andamento.resultado is not None:
+                identificador = andamento.resultado.id_externo
+                if identificador is None or _RE_ID_GRAPH.fullmatch(identificador) is None:
+                    return None
+                return ResultadoConsulta(
+                    EstadoConsulta.ENCONTRADO, identificador, andamento.resultado.url
+                )
+            if andamento.publish_enviado:  # pode ter saído (INCERTO): nunca "não encontrado"
+                return None
+            return ResultadoConsulta(EstadoConsulta.NAO_ENCONTRADO)  # publish jamais enviado
+
+        agora = self._relogio()
+        if agora.tzinfo is None or agora.utcoffset() is None:
+            return None
+        if not self.verificar_conexao().valida:
+            return None
+        limite = agora - self._janela_consulta
+        for borda in ("media", "stories"):
+            if not self._sem_midia_na_janela(borda, limite):
+                return None
+        return ResultadoConsulta(EstadoConsulta.NAO_ENCONTRADO)
+
+    def _sem_midia_na_janela(self, borda: str, limite: datetime) -> bool:
+        """``True`` só com listagem lida, completa e SEM mídia a partir de ``limite``."""
+        url = f"{self._base}/{self._id_conta}/{borda}?fields=id,timestamp&limit={_LIMITE_LISTAGEM}"
+        dados = self._obter_json(url, f"consultar_{borda}")
+        if dados is None:
+            return False
+        itens = dados.get("data")
+        if not isinstance(itens, list):
+            return False
+        viu_anterior = False
+        anterior: datetime | None = None
+        for item in itens:
+            if not isinstance(item, dict):
+                return False
+            identificador = item.get("id")
+            texto = item.get("timestamp")
+            if not (isinstance(identificador, str) and _RE_ID_GRAPH.fullmatch(identificador)):
+                return False
+            if not isinstance(texto, str):
+                return False
+            try:
+                instante = datetime.fromisoformat(texto)
+            except ValueError:
+                return False
+            if instante.tzinfo is None or instante.utcoffset() is None:
+                return False
+            if anterior is not None and instante > anterior:  # ordem decrescente não confirmada
+                return False
+            anterior = instante
+            if instante >= limite:  # pode ser a publicação da tentativa anterior
+                return False
+            viu_anterior = True
+        paginacao = dados.get("paging")
+        if paginacao is not None and not isinstance(paginacao, dict):
+            return False
+        pendente = isinstance(paginacao, dict) and paginacao.get("next") is not None
+        return not pendente or viu_anterior

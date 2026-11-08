@@ -459,11 +459,13 @@ def test_publicar_imagem_sem_estagio_sem_rede_e_nunca_sucesso(
     assert transporte.chamadas == []
 
 
-def test_consultar_desconhecido_sem_rede() -> None:
+def test_consultar_com_conexao_ilegivel_e_desconhecido() -> None:
+    # T047 substituiu o stub da T043 (que nunca tocava a rede): agora a consulta verifica a
+    # conexão antes de listar; resposta ilegível = INVALIDA = DESCONHECIDO, sem listar.
     transporte = TransporteGravado((200, b"{}"))
     resultado = _adaptador(transporte).consultar(CHAVE)
     assert resultado.estado is EstadoConsulta.DESCONHECIDO
-    assert transporte.chamadas == []
+    assert len(transporte.chamadas) == 1  # só a verificação de conexão
 
 
 # --------------------------------------------------------------------------- I-1

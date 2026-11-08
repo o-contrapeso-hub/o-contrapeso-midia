@@ -39,6 +39,7 @@ __all__ = [
     "CaminhoDeArteInvalido",
     "ErroAcessoArmazem",
     "TransporteHttp",
+    "TransporteHttpEscrita",
     "TransporteHttpUrllib",
     "validar_caminho_de_arte",
 ]
@@ -47,6 +48,7 @@ _URL_BASE: Final = "https://api.github.com"
 _ACCEPT: Final = "application/vnd.github.raw+json"
 _TIMEOUT_PADRAO: Final = 30.0
 _BLOCO_HASH: Final = 1024 * 1024
+_LIMITE_CORPO_RESPOSTA: Final = 4 * 1024 * 1024
 _RE_NOME_GITHUB: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
@@ -172,6 +174,24 @@ class TransporteHttp(Protocol):
     ) -> tuple[int, bytes]: ...
 
 
+class TransporteHttpEscrita(TransporteHttp, Protocol):
+    """Transporte com escrita (POST e DELETE), usado pelos adaptadores de publicacao.
+
+    Contrato (vale tambem para ``obter``): devolve ``(status, corpo)`` para QUALQUER status
+    HTTP, inclusive 3xx/4xx/5xx (nunca segue redirecionamento); levanta excecao somente em
+    falha de comunicacao (rede, timeout, TLS). O corpo bruto nunca deve ir a log nem a
+    mensagem de excecao: quem chama so extrai campos de forma estrita.
+    """
+
+    def postar(
+        self, url: str, cabecalhos: Mapping[str, str], corpo: bytes, timeout: float
+    ) -> tuple[int, bytes]: ...
+
+    def apagar(
+        self, url: str, cabecalhos: Mapping[str, str], timeout: float
+    ) -> tuple[int, bytes]: ...
+
+
 class _SemRedirecionamento(urllib.request.HTTPRedirectHandler):
     """Nao segue redirecionamentos: o token nunca e reenviado a outro host."""
 
@@ -182,19 +202,47 @@ class _SemRedirecionamento(urllib.request.HTTPRedirectHandler):
 
 
 class TransporteHttpUrllib:
-    """Implementacao de ``TransporteHttp`` com ``urllib`` (apenas HTTPS)."""
+    """Implementacao de ``TransporteHttpEscrita`` com ``urllib`` (apenas HTTPS).
+
+    Devolve status e corpo tambem em HTTP 3xx/4xx/5xx (corpo de erro limitado a 4 MiB), para
+    permitir classificar o erro; nao segue redirecionamentos.
+    """
 
     def obter(self, url: str, cabecalhos: Mapping[str, str], timeout: float) -> tuple[int, bytes]:
+        return self._enviar("GET", url, cabecalhos, None, timeout)
+
+    def postar(
+        self, url: str, cabecalhos: Mapping[str, str], corpo: bytes, timeout: float
+    ) -> tuple[int, bytes]:
+        return self._enviar("POST", url, cabecalhos, bytes(corpo), timeout)
+
+    def apagar(self, url: str, cabecalhos: Mapping[str, str], timeout: float) -> tuple[int, bytes]:
+        return self._enviar("DELETE", url, cabecalhos, None, timeout)
+
+    @staticmethod
+    def _enviar(
+        metodo: str,
+        url: str,
+        cabecalhos: Mapping[str, str],
+        corpo: bytes | None,
+        timeout: float,
+    ) -> tuple[int, bytes]:
         if not url.startswith("https://"):
             raise ValueError("Somente URLs https sao permitidas.")
-        requisicao = urllib.request.Request(url, headers=dict(cabecalhos), method="GET")  # noqa: S310
+        requisicao = urllib.request.Request(  # noqa: S310
+            url, data=corpo, headers=dict(cabecalhos), method=metodo
+        )
         abridor = urllib.request.build_opener(_SemRedirecionamento)
         try:
             with abridor.open(requisicao, timeout=timeout) as resposta:  # noqa: S310
                 return int(resposta.status), bytes(resposta.read())
         except urllib.error.HTTPError as erro:
             try:
-                return int(erro.code), b""
+                try:
+                    dados = bytes(erro.read(_LIMITE_CORPO_RESPOSTA))
+                except Exception:  # noqa: BLE001 - corpo ilegivel: so o status importa
+                    dados = b""
+                return int(erro.code), dados
             finally:
                 erro.close()
 

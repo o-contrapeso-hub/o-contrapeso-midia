@@ -106,6 +106,10 @@ class TipoDeProblema(Enum):
     EXTENSAO_NAO_SUPORTADA = "extensao_nao_suportada"
     ARTE_NAO_ENCONTRADA = "arte_nao_encontrada"
     ARMAZEM_INDISPONIVEL = "armazem_indisponivel"
+    TIPO_DE_ARQUIVO_INVALIDO = "tipo_de_arquivo_invalido"  # conteúdo não é do tipo aceito
+    IMAGEM_ILEGIVEL = "imagem_ilegivel"  # dimensões não puderam ser lidas
+    PROPORCAO_FORA_DO_PERMITIDO = "proporcao_fora_do_permitido"
+    TAMANHO_EXCEDIDO = "tamanho_excedido"
 
 
 @dataclass(frozen=True)
